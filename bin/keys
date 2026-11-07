@@ -1,0 +1,30 @@
+#!/bin/sh
+# keys — chuleta de atajos en fuzzel (solo lectura; Enter o Esc la cierran).
+pkill -x fuzzel && exit 0
+cat <<'TXT' | fuzzel --dmenu --lines 22 --width 56 --prompt "󰌌  " --placeholder "Atajos…" >/dev/null
+󰀻  Super+D            buscar apps
+󰆍  Super+Enter        terminal
+󰖟  Super+B            navegador (Shift: incógnito)
+󰉋  Super+E            archivos (yazi)
+󰅌  Super+V            historial del portapapeles
+󰒓  Super+Espacio      centro de control
+󰸉  Super+W            elegir fondo (Shift: aleatorio · Alt: siguiente)
+󰖔  Super+Z            luz nocturna (Shift: elegir nivel)
+󰓃  Super+A            salida de audio (Shift: entrada)
+󰖩  Super+Y            redes Wi-Fi
+󰄀  Print              captura (Shift: área · Ctrl: copiar · Super: anotar)
+󰑋  Super+Shift+P      grabar pantalla (Super+Ctrl+P: un área)
+󰚰  Super+U            actualizar el sistema (repos + AUR)
+󰋽  Super+F2           estado y seguridad del sistema
+󰂚  Super+Ctrl+N       historial de notificaciones
+󰂛  Super+N            no molestar (Shift: descartar todas)
+󰌾  Super+Shift+L      bloquear
+󰐥  Super+Esc          menú de sesión
+󰖲  Super+Q            cerrar ventana
+󰊓  Super+F            maximizar (Shift: pantalla completa)
+󰘕  Super+M            minimizar
+󰍽  Super+H/J/K/L      acomodar ventana en la mitad izquierda/abajo/arriba/derecha
+󰇄  Super+1..4         escritorio (Shift: enviar la ventana)
+󰄪  Ctrl+Shift+Esc     monitor del sistema (btop)
+󰑓  Super+Shift+R      recargar labwc
+TXT

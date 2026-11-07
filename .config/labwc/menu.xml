@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu>
+  <menu id="root-menu" label="Menú">
+    <item label="Terminal"><action name="Execute"><command>foot</command></action></item>
+    <item label="Buscar apps"><action name="Execute"><command>fuzzel</command></action></item>
+    <item label="Navegador"><action name="Execute"><command>helium-browser</command></action></item>
+    <item label="Archivos"><action name="Execute"><command>thunar</command></action></item>
+    <separator/>
+    <item label="Centro de control"><action name="Execute"><command>ink-menu</command></action></item>
+    <item label="Cambiar fondo"><action name="Execute"><command>wallpaper pick</command></action></item>
+    <item label="Fondo aleatorio"><action name="Execute"><command>wallpaper random</command></action></item>
+    <separator/>
+    <menu id="client-list-combined-menu"/>
+    <separator/>
+    <item label="Bloquear"><action name="Execute"><command>lock</command></action></item>
+    <item label="Apagar…"><action name="Execute"><command>power-menu</command></action></item>
+    <separator/>
+    <item label="Recargar labwc"><action name="Reconfigure"/></item>
+  </menu>
+</openbox_menu>

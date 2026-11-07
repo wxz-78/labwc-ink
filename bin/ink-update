@@ -1,0 +1,24 @@
+#!/bin/sh
+# ink-update — actualizaciones. Uso: ink-update status (JSON para waybar) | run (abre foot y actualiza)
+case "$1" in
+    status)
+        list=$(timeout 90 checkupdates 2>/dev/null)
+        command -v paru >/dev/null 2>&1 && list="$list
+$(timeout 60 paru -Qua 2>/dev/null)"
+        list=$(printf '%s\n' "$list" | sed '/^$/d')
+        n=$(printf '%s\n' "$list" | sed '/^$/d' | wc -l)
+        [ -n "$list" ] || { echo '{"text":"","class":"none","tooltip":"Al día"}'; exit 0; }
+        tip=$(printf '%s\n' "$list" | head -n 15 | sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+        [ "$n" -gt 15 ] && tip="$tip\\n… y $((n - 15)) más"
+        printf '{"text":"󰚰 %s","class":"pending","tooltip":"%s actualizaciones\\n%s"}\n' "$n" "$n" "$tip" ;;
+    run)
+        exec foot -T "Actualizar sistema" -e sh -c '
+            echo "󰎕  Últimas noticias de Arch (léelas: a veces piden intervención manual)"
+            curl -fsS --max-time 6 https://archlinux.org/feeds/news/ 2>/dev/null \
+                | grep -o "<title>[^<]*</title>" | sed "1d;s/<[^>]*>//g;s/&amp;/\&/g" | head -n 4 | sed "s/^/   · /"
+            echo
+            if command -v paru >/dev/null 2>&1; then paru -Syu; else sudo pacman -Syu; fi
+            printf "\n󰄬  Terminado. Enter para cerrar… "; read _
+            pkill -USR2 -x waybar' ;;
+    *) echo "uso: ink-update status|run" >&2; exit 1 ;;
+esac

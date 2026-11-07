@@ -1,0 +1,34 @@
+#!/bin/sh
+# ink-menu — centro de control con fuzzel: fondo, capturas, grabación, audio, Wi-Fi, luz nocturna, sistema…
+pkill -x fuzzel && exit 0
+m() { fuzzel --dmenu --index --lines "$1" --width 34 --prompt "󰍉  "; }   # m N  (lee entradas por stdin)
+
+case $(printf '%s\n' \
+    "󰸉  Fondo de pantalla" "󰄀  Captura" "󰑋  Grabar pantalla" "󰅌  Portapapeles" "󰂚  Notificaciones" \
+    "󰖩  Wi-Fi" "󰓃  Salida de audio" "󰍬  Entrada de audio" "󰖔  Luz nocturna" "󰂛  No molestar" \
+    "󰚰  Actualizar sistema" "󰋽  Estado del sistema" "󰌌  Atajos" "󰐥  Sesión" | m 14) in
+    0) case $(printf '%s\n' "󰋩  Elegir fondo" "󰒝  Aleatorio" "󰒭  Siguiente" "󰔛  Rotación automática" "󰹑  Ajuste de imagen" | m 5) in
+           0) exec wallpaper pick ;; 1) exec wallpaper random ;; 2) exec wallpaper next ;;
+           3) exec wallpaper auto ;;  4) exec wallpaper mode ;;
+       esac ;;
+    1) case $(printf '%s\n' "󰍹  Pantalla completa" "󰆟  Área" "󰅌  Área al portapapeles" "󰏫  Área y anotar" | m 4) in
+           0) sleep 0.3; exec shot full ;; 1) exec shot area ;; 2) exec shot clip ;; 3) exec shot edit ;;
+       esac ;;
+    2) case $(printf '%s\n' "󰍹  Pantalla completa" "󰆟  Un área" | m 2) in
+           0) exec rec full ;; 1) exec rec area ;;
+       esac ;;
+    3) case $(printf '%s\n' "󰅌  Ver historial" "󰆴  Borrar historial" | m 2) in
+           0) cliphist list | fuzzel --dmenu | cliphist decode | wl-copy ;;
+           1) cliphist wipe && notify-send -u low -t 2000 "󰆴  Portapapeles" "Historial borrado" ;;
+       esac ;;
+    4) exec notif ;;
+    5) exec wifi-menu ;;
+    6) exec audio-switch sink ;;
+    7) exec audio-switch source ;;
+    8) exec nightlight menu ;;
+    9) exec dnd toggle ;;
+    10) exec ink-update run ;;
+    11) exec ink-doctor ;;
+    12) exec keys ;;
+    13) exec power-menu ;;
+esac

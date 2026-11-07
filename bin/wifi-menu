@@ -1,0 +1,40 @@
+#!/bin/sh
+# wifi-menu — redes Wi-Fi con fuzzel + nmcli. Si no hay forma de pedir la contraseña, abre nmtui.
+pkill -x fuzzel && exit 0
+command -v nmcli >/dev/null 2>&1 || exit 1
+TAB=$(printf '\t')
+[ "$(nmcli radio wifi)" = enabled ] || { nmcli radio wifi on; sleep 2; }
+nmcli device wifi rescan >/dev/null 2>&1 &
+sleep 1
+tmp=$(mktemp)
+# campos: IN-USE:SIGNAL:SECURITY:SSID — el SSID va al final porque puede llevar «:» (nmcli los escapa como «\:»)
+nmcli -t -f IN-USE,SIGNAL,SECURITY,SSID device wifi list --rescan no | awk -F: '
+    { s = $4; for (i = 5; i <= NF; i++) s = s ":" $i; gsub(/\\:/, ":", s)
+      if (s != "" && !seen[s]++) print $2 "\t" s "\t" $3 "\t" $1 }' | sort -t"$TAB" -k1,1nr > "$tmp"
+sel=$({ while IFS=$TAB read -r sig ssid sec use; do
+            [ "$use" = "*" ] && m="󰄬" || m=" "
+            [ "$sec" = "--" ] && l=" " || l="󰌾"
+            printf '%s  %-28s %3s%%  %s\n' "$m" "$ssid" "$sig" "$l"
+        done < "$tmp"
+        printf '%s\n' "󰖪  Apagar Wi-Fi" "󰒓  Avanzado (nmtui)"
+      } | fuzzel --dmenu --index --lines 9 --width 52 --prompt "󰖩  ")
+[ -n "$sel" ] || { rm -f "$tmp"; exit 0; }
+n=$(wc -l < "$tmp")
+if [ "$sel" -ge "$n" ]; then
+    rm -f "$tmp"
+    [ "$sel" -eq "$n" ] && { nmcli radio wifi off; notify-send -u low "󰖪  Wi-Fi apagado"; exit 0; }
+    exec foot -e nmtui
+fi
+line=$(sed -n "$((sel + 1))p" "$tmp"); rm -f "$tmp"
+ssid=$(printf '%s' "$line" | cut -f2); sec=$(printf '%s' "$line" | cut -f3)
+if nmcli -t -f NAME connection show | grep -qxF -- "$ssid"; then
+    out=$(nmcli connection up id "$ssid" 2>&1)
+elif [ "$sec" = "--" ]; then
+    out=$(nmcli device wifi connect "$ssid" 2>&1)
+elif fuzzel --help 2>&1 | grep -q -- --prompt-only; then
+    pw=$(fuzzel --prompt-only "󰌾  $ssid: " --password) || exit 0
+    [ -n "$pw" ] || exit 0
+    out=$(nmcli device wifi connect "$ssid" password "$pw" 2>&1)
+else
+    exec foot -e nmtui
+fi && notify-send -u low -t 3000 "󰤨  Conectado" "$ssid" || notify-send -u normal "󰤭  No se pudo conectar" "$out"

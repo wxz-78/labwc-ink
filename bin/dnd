@@ -1,0 +1,17 @@
+#!/bin/sh
+# dnd — «No molestar» de mako.  Uso: dnd toggle | dnd status (JSON, por si quieres un módulo en waybar)
+# La barra ya no muestra el estado, así que toggle lo avisa con una notificación:
+# al activar se muestra ANTES de silenciar (en modo dnd mako oculta todo).
+case "$1" in
+    toggle) case "$(makoctl mode 2>/dev/null)" in
+                *dnd*) makoctl mode -r dnd >/dev/null 2>&1
+                       notify-send -u low -t 2000 -h string:x-canonical-private-synchronous:dnd "󰂚  No molestar" "desactivado" ;;
+                *)     notify-send -u low -t 2000 -h string:x-canonical-private-synchronous:dnd "󰂛  No molestar" "activado"
+                       sleep 2; makoctl mode -a dnd >/dev/null 2>&1 ;;
+            esac ;;
+    status) case "$(makoctl mode 2>/dev/null)" in
+                *dnd*) echo '{"text":"󰂛","class":"on","tooltip":"No molestar: activado"}' ;;
+                *)     echo '{"text":"󰂚","class":"off","tooltip":"No molestar: apagado"}' ;;
+            esac ;;
+    *) echo "uso: dnd toggle|status" >&2; exit 1 ;;
+esac
