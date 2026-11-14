@@ -1,0 +1,26 @@
+#!/bin/sh
+# battery-watch — avisa con una notificación cuando la batería se acaba (15 % y 7 %). Lo lanza labwc/autostart.
+# Sin batería propia (PC de escritorio) termina al instante. Se ignoran las baterías de periféricos (scope=Device).
+rd() { v=""; [ -r "$1" ] && read -r v < "$1"; }   # rd ARCHIVO → contenido en $v
+bat=""
+for d in /sys/class/power_supply/*; do
+    rd "$d/type"; [ "$v" = Battery ] || continue
+    rd "$d/scope"; [ "$v" = Device ] && continue
+    bat=$d; break
+done
+[ -n "$bat" ] || exit 0
+
+last=100
+while :; do
+    rd "$bat/status"; st=$v
+    rd "$bat/capacity"; cap=${v:-100}
+    if [ "$st" = Discharging ]; then
+        if   [ "$cap" -le 7 ]  && [ "$last" -gt 7 ];  then notify-send -u critical -h string:x-canonical-private-synchronous:battery "󰂃  Batería crítica: $cap %" "Conecta el cargador ya: el equipo puede apagarse."
+        elif [ "$cap" -le 15 ] && [ "$last" -gt 15 ]; then notify-send -u normal   -h string:x-canonical-private-synchronous:battery "󰁺  Batería baja: $cap %" "Conecta el cargador."
+        fi
+        last=$cap
+    else
+        last=100   # cargando o llena: se rearma para el próximo ciclo
+    fi
+    sleep 60
+done

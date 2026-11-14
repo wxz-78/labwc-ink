@@ -1,0 +1,140 @@
+#!/bin/sh
+# wallpaper — fondo de pantalla con fuzzel (miniaturas), aleatorio, rotación automática y ajuste.
+# Uso: wallpaper pick | random | next | prev | set ARCHIVO | mode | auto [MIN|off] | restore | status
+# Carpetas: ~/.local/share/backgrounds y ~/Imágenes/Wallpapers (xdg PICTURES/Wallpapers).
+# Miniaturas: si hay ImageMagick (magick/convert) se cachean en ~/.cache/ink; si no, fuzzel usa la imagen original.
+state=${XDG_STATE_HOME:-$HOME/.local/state}/ink
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/ink/wallthumbs
+conf=${XDG_CONFIG_HOME:-$HOME/.config}/fuzzel/wallpaper.ini
+pics=$(xdg-user-dir PICTURES 2>/dev/null); [ -n "$pics" ] || pics=$HOME/Pictures
+mkdir -p "$state"
+
+say() { notify-send -u low -t 2000 -h string:x-canonical-private-synchronous:wallpaper ${3:+-i "$3"} "$1" "$2"; }
+rd()  { v=""; [ -r "$1" ] && read -r v < "$1"; }     # rd ARCHIVO → contenido en $v
+
+list() {   # imágenes disponibles, ordenadas
+    find -L "$HOME/.local/share/backgrounds" "$pics/Wallpapers" -maxdepth 2 -type f \
+        \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) 2>/dev/null | sort
+}
+
+fz() {   # fuzzel con el estilo grande de miniaturas si existe wallpaper.ini
+    if [ -f "$conf" ]; then fuzzel --config "$conf" "$@"; else fuzzel "$@"; fi
+}
+
+thumb() {   # $1 = imagen → ruta de la miniatura (o la propia imagen)
+    im=""; for c in magick convert; do command -v $c >/dev/null 2>&1 && { im=$c; break; }; done
+    [ -n "$im" ] || { printf '%s' "$1"; return; }
+    key=$(printf '%s%s' "$1" "$(stat -c %Y "$1")" | cksum | cut -d' ' -f1)
+    out=$cache/$key.png
+    if [ ! -f "$out" ]; then
+        mkdir -p "$cache"
+        $im "$1[0]" -thumbnail 320x320^ -gravity center -extent 320x320 "$out" 2>/dev/null || out=$1
+    fi
+    printf '%s' "$out"
+}
+
+apply() {   # $1 = archivo
+    [ -f "$1" ] || { say "󰸉  Fondo" "No existe: $1"; return 1; }
+    rd "$state/mode"; m=${v:-fill}
+    old=$(pgrep -x swaybg)                           # el viejo se cierra DESPUÉS de lanzar el nuevo: sin parpadeo
+    setsid -f swaybg -i "$1" -m "$m" -c 0a0a0a >/dev/null 2>&1
+    [ -n "$old" ] && { sleep 0.4; kill $old 2>/dev/null; }
+    printf '%s\n' "$1" > "$state/wallpaper"
+    say "󰸉  Fondo" "$(basename "$1")" "$1"
+}
+
+pick() {
+    pkill -x fuzzel && exit 0
+    tmp=$(mktemp); list > "$tmp"
+    [ -s "$tmp" ] || { say "󰸉  Sin fondos" "Copia imágenes a ~/.local/share/backgrounds"; rm -f "$tmp"; exit 1; }
+    sel=$({ printf '%s\n' "󰒝  Aleatorio"
+            while IFS= read -r f; do printf '%s\0icon\037%s\n' "$(basename "$f")" "$(thumb "$f")"; done < "$tmp"
+          } | fz --dmenu --index --lines 6 --width 44 --prompt "󰍉  " --placeholder "Fondo de pantalla…")
+    [ -n "$sel" ] || { rm -f "$tmp"; exit 0; }
+    if [ "$sel" = 0 ]; then rm -f "$tmp"; random; else apply "$(sed -n "${sel}p" "$tmp")"; rm -f "$tmp"; fi
+}
+
+random() {
+    rd "$state/wallpaper"
+    f=$(list | grep -vxF -- "$v" | shuf -n1)
+    [ -n "$f" ] || f=$(list | shuf -n1)              # solo hay una imagen
+    [ -n "$f" ] && apply "$f"
+}
+
+step() {   # $1 = 1 siguiente | -1 anterior (en orden alfabético, circular)
+    tmp=$(mktemp); list > "$tmp"; n=$(wc -l < "$tmp")
+    [ "$n" -gt 0 ] || { rm -f "$tmp"; return 1; }
+    rd "$state/wallpaper"; i=$(grep -nxF -- "$v" "$tmp" | cut -d: -f1 | head -n1); i=${i:-0}
+    j=$(( (i - 1 + $1 + n) % n + 1 ))
+    apply "$(sed -n "${j}p" "$tmp")"; rm -f "$tmp"
+}
+
+setmode() {
+    pkill -x fuzzel && exit 0
+    c=$(printf '%s\n' "󰹑  Llenar (fill)" "󰉡  Ajustar (fit)" "󰁌  Estirar (stretch)" "󰘖  Centrar (center)" "󰋁  Mosaico (tile)" |
+        fuzzel --dmenu --index --lines 5 --width 28 --prompt "󰍉  ")
+    case $c in 0) m=fill ;; 1) m=fit ;; 2) m=stretch ;; 3) m=center ;; 4) m=tile ;; *) exit 0 ;; esac
+    printf '%s\n' "$m" > "$state/mode"
+    rd "$state/wallpaper"; [ -n "$v" ] && apply "$v"
+}
+
+loop() {   # demonio de rotación (lo lanza «auto»)
+    echo $$ > "$state/auto.pid"
+    while :; do
+        rd "$state/auto"; [ -n "$v" ] || exit 0
+        sleep $((v * 60))
+        [ -f "$state/auto" ] && random
+    done
+}
+
+stop_auto() {
+    rd "$state/auto.pid"
+    [ -n "$v" ] && grep -qs wallpaper "/proc/$v/cmdline" && kill "$v" 2>/dev/null
+    rm -f "$state/auto.pid"
+}
+
+auto() {   # auto N (minutos) | auto off | auto (menú)
+    a=$1
+    if [ -z "$a" ]; then
+        pkill -x fuzzel && exit 0
+        c=$(printf '%s\n' "󰔛  Cada 10 min" "󰔛  Cada 30 min" "󰔛  Cada hora" "󰏤  Desactivar" |
+            fuzzel --dmenu --index --lines 4 --width 26 --prompt "󰍉  ")
+        case $c in 0) a=10 ;; 1) a=30 ;; 2) a=60 ;; 3) a=off ;; *) exit 0 ;; esac
+    fi
+    stop_auto
+    case $a in
+        off) rm -f "$state/auto"; say "󰸉  Rotación" "desactivada" ;;
+        *[!0-9]*|"") echo "uso: wallpaper auto MINUTOS|off" >&2; exit 1 ;;
+        *) [ "$a" -ge 1 ] || exit 1
+           printf '%s\n' "$a" > "$state/auto"; setsid -f "$0" loop >/dev/null 2>&1
+           say "󰸉  Rotación" "cada $a min" ;;
+    esac
+}
+
+restore() {   # inicio de sesión: último fondo → ink.png → cualquiera → negro liso
+    rd "$state/wallpaper"; f=$v
+    if [ ! -f "$f" ]; then
+        f="$HOME/.local/share/backgrounds/ink.png"
+        [ -f "$f" ] || f=$(list | head -n1)
+    fi
+    rd "$state/mode"; m=${v:-fill}
+    pkill -x swaybg 2>/dev/null
+    if [ -n "$f" ]; then setsid -f swaybg -i "$f" -m "$m" -c 0a0a0a >/dev/null 2>&1; [ -f "$state/wallpaper" ] || printf '%s\n' "$f" > "$state/wallpaper"
+    else setsid -f swaybg -c 0a0a0a >/dev/null 2>&1; fi
+    [ -f "$state/auto" ] && { stop_auto; setsid -f "$0" loop >/dev/null 2>&1; }
+}
+
+case "$1" in
+    pick|"") pick ;;
+    random)  random ;;
+    next)    step 1 ;;
+    prev)    step -1 ;;
+    set)     [ -n "$2" ] || { echo "uso: wallpaper set ARCHIVO" >&2; exit 1; }; apply "$(realpath "$2")" ;;
+    mode)    setmode ;;
+    auto)    auto "$2" ;;
+    loop)    loop ;;
+    restore) restore ;;
+    status)  rd "$state/wallpaper"; echo "fondo: ${v:-ninguno}"; rd "$state/mode"; echo "ajuste: ${v:-fill}"
+             rd "$state/auto"; if [ -n "$v" ]; then echo "rotación: cada $v min"; else echo "rotación: desactivada"; fi ;;
+    *) echo "uso: wallpaper pick|random|next|prev|set ARCHIVO|mode|auto [MIN|off]|restore|status" >&2; exit 1 ;;
+esac

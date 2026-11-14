@@ -1,0 +1,36 @@
+#!/bin/sh
+# ink-update — actualizaciones. Uso: ink-update status (JSON para waybar) | run (abre foot y actualiza)
+case "$1" in
+    status)
+        list=$(timeout 90 checkupdates 2>/dev/null); rc=$?   # checkupdates: 0 hay, 2 no hay, otro = fallo (sin red…)
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            echo '{"text":"󰚰 ?","class":"error","tooltip":"No se pudo comprobar las actualizaciones (¿sin red?)"}'; exit 0
+        fi
+        for h in paru yay; do   # AUR: el primer ayudante que exista
+            command -v "$h" >/dev/null 2>&1 || continue
+            list="$list
+$(timeout 60 "$h" -Qua 2>/dev/null)"; break
+        done
+        list=$(printf '%s\n' "$list" | sed '/^$/d')
+        n=$(printf '%s\n' "$list" | sed '/^$/d' | wc -l)
+        [ -n "$list" ] || { echo '{"text":"","class":"none","tooltip":"Al día"}'; exit 0; }
+        tip=$(printf '%s\n' "$list" | head -n 15 | sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+        [ "$n" -gt 15 ] && tip="$tip\\n… y $((n - 15)) más"
+        printf '{"text":"󰚰 %s","class":"pending","tooltip":"%s actualizaciones\\n%s"}\n' "$n" "$n" "$tip" ;;
+    run)
+        exec foot -T "Actualizar sistema" -e sh -c '
+            echo "󰎕  Últimas noticias de Arch (léelas: a veces piden intervención manual)"
+            curl -fsS --max-time 6 https://archlinux.org/feeds/news/ 2>/dev/null \
+                | grep -o "<title>[^<]*</title>" | sed "1d;s/<[^>]*>//g;s/&amp;/\&/g" | head -n 4 | sed "s/^/   · /"
+            echo
+            if command -v paru >/dev/null 2>&1; then paru -Syu
+            elif command -v yay >/dev/null 2>&1; then yay -Syu
+            else sudo pacman -Syu; fi
+            rc=$?
+            [ -d "/usr/lib/modules/$(uname -r)" ] || printf "\n󰜉  Se actualizó el kernel: reinicia para usarlo.\n"
+            if [ "$rc" -eq 0 ]; then printf "\n󰄬  Terminado. Enter para cerrar… "
+            else printf "\n󰅚  La actualización terminó con error (código %s). Revisa los mensajes de arriba. Enter para cerrar… " "$rc"; fi
+            read _
+            pkill -RTMIN+9 -x waybar' ;;
+    *) echo "uso: ink-update status|run" >&2; exit 1 ;;
+esac

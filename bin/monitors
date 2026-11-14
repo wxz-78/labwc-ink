@@ -1,0 +1,92 @@
+#!/bin/sh
+# monitors — pantallas con fuzzel + wlr-randr: encender/apagar, resolución, escala y posición.
+# Uso: monitors            menú
+#      monitors restore    reaplica la última configuración guardada (lo hace autostart al iniciar sesión)
+# Cada cambio se guarda en ~/.config/ink/monitors y se recupera en el siguiente inicio.
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}/ink/monitors"
+say() { notify-send -u low -t 2500 "󰍹  Pantallas" "$1"; }
+command -v wlr-randr >/dev/null 2>&1 || { say "Falta wlr-randr"; exit 1; }
+
+restore() {
+    [ -s "$cfg" ] || exit 0
+    # La configuración guardada es una línea de argumentos de wlr-randr: se dividen a propósito.
+    # shellcheck disable=SC2046
+    wlr-randr $(cat "$cfg") >/dev/null 2>&1
+    exit 0
+}
+[ "${1:-}" = restore ] && restore
+pkill -x fuzzel && exit 0
+
+# Guarda el estado actual: una línea de argumentos de wlr-randr por pantalla
+save() {
+    mkdir -p "${cfg%/*}"
+    wlr-randr | awk '
+        function flush() { if (n == "") return
+            if (en == "no") print "--output " n " --off"
+            else print "--output " n " --on --mode " mode " --pos " pos " --scale " sc }
+        /^[^ ]/            { flush(); n = $1; en = "yes"; mode = ""; pos = "0,0"; sc = "1"; next }
+        /^  Enabled:/      { en = $2 }
+        /^  Position:/     { pos = $2 }
+        /^  Scale:/        { sc = $2 }
+        /current/ && /px,/ { mode = $1 "@" $3 "Hz" }
+        END { flush() }' > "$cfg"
+}
+# apply ARGS… : aplica y guarda solo si wlr-randr lo aceptó
+apply() { if wlr-randr "$@" 2>/dev/null; then save; else say "No se pudo aplicar (pantalla o modo no válido)"; fi; }
+
+# choose "texto1\ntexto2…" LÍNEAS → imprime el número elegido (1…) o nada si cancelas
+choose() { i=$(printf '%s\n' "$1" | fuzzel --dmenu --index --lines "$2" --width 40 --prompt "󰍹  ") || return 1; echo $((i + 1)); }
+pickline() { printf '%s\n' "$1" | sed -n "${2}p"; }
+
+# geom SALIDA → "x y ancho alto" lógicos (con la escala aplicada)
+geom() { wlr-randr | awk -v o="$1" '
+    /^[^ ]/            { cur = ($1 == o); next }
+    !cur               { next }
+    /^  Position:/     { split($2, p, ",") }
+    /^  Scale:/        { sc = $2 }
+    /current/ && /px,/ { split($1, d, "x") }
+    END { printf "%d %d %d %d\n", p[1], p[2], d[1] / sc, d[2] / sc }'; }
+
+outs=$(wlr-randr | awk '/^[^ ]/ {print $1}')
+[ -n "$outs" ] || { say "No se detectaron pantallas"; exit 1; }
+n=$(printf '%s\n' "$outs" | wc -l)
+if [ "$n" -eq 1 ]; then out=$outs
+else
+    list=$(wlr-randr | awk '/^[^ ]/ {n = $1; $1 = ""; print n "  " $0}')
+    s=$(choose "$list" "$n") || exit 0; out=$(pickline "$outs" "$s")
+fi
+state=$(wlr-randr | awk -v o="$out" '/^[^ ]/ {c = ($1 == o)} c && /^  Enabled:/ {print $2}')
+enabled=$(wlr-randr | grep -c '^  Enabled: yes')
+
+act=$(choose "$(printf '%s\n' \
+    "$([ "$state" = yes ] && echo '󰶐  Apagar' || echo '󰶐  Encender')" "󰍹  Resolución" "󰩨  Escala" \
+    "󰁔  Poner a la derecha de otra" "󰁍  Poner a la izquierda de otra" "󰍺  Solo esta pantalla")" 6) || exit 0
+
+case $act in
+    1) if [ "$state" = yes ]; then
+           [ "$enabled" -gt 1 ] || { say "No se puede apagar la única pantalla encendida"; exit 1; }
+           apply --output "$out" --off
+       else apply --output "$out" --on; fi ;;
+    2) modes=$(wlr-randr | awk -v o="$out" '
+           /^[^ ]/ {c = ($1 == o); m = 0; next}
+           c && /^  Modes:/ {m = 1; next}
+           c && m && /px,/ {print $1 "@" $3 "Hz"; next}
+           c && m {m = 0}')
+       s=$(choose "$modes" 12) || exit 0; apply --output "$out" --mode "$(pickline "$modes" "$s")" ;;
+    3) s=$(choose "$(printf '%s\n' 100% 125% 150% 175% 200%)" 5) || exit 0
+       apply --output "$out" --scale "$(printf '%s\n' 1 1.25 1.5 1.75 2 | sed -n "${s}p")" ;;
+    4|5) others=$(printf '%s\n' "$outs" | grep -vx "$out")
+         [ -n "$others" ] || { say "No hay otra pantalla"; exit 1; }
+         if [ "$(printf '%s\n' "$others" | wc -l)" -eq 1 ]; then ref=$others
+         else s=$(choose "$others" 6) || exit 0; ref=$(pickline "$others" "$s"); fi
+         read -r rx ry rw _ <<EOF
+$(geom "$ref")
+EOF
+         read -r _ _ mw _ <<EOF
+$(geom "$out")
+EOF
+         if [ "$act" = 4 ]; then x=$((rx + rw)); else x=$((rx - mw)); fi
+         apply --output "$out" --on --pos "$x,$ry" ;;
+    6) for o in $outs; do [ "$o" = "$out" ] || set -- "$@" --output "$o" --off; done
+       apply --output "$out" --on "$@" ;;
+esac

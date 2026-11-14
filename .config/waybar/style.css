@@ -1,0 +1,234 @@
+/* Ink — waybar. Píldoras transparentes en tonos grises. Recarga: pkill -SIGUSR2 waybar
+   Paleta (solo grises):  texto #e4e4e4 · fuerte #ffffff · tenue #bfbfbf · apagado #6e6e6e · tinta #101010 */
+* {
+  border: none;
+  border-radius: 0;
+  min-height: 0;
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 14px;
+  color: #e4e4e4;
+  /* sin desenfoque de fondo (labwc no lo tiene): la sombra del texto mantiene la lectura sobre fondos claros */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+/* Barra totalmente transparente: solo se ven las píldoras */
+window#waybar {
+  background: transparent;
+}
+
+/* ── Tooltips y menús ─────────────────────────────────────────── */
+tooltip,
+menu {
+  background: rgba(16, 16, 16, 0.94);
+  border: 1px solid #2f2f2f;
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+tooltip label {
+  color: #e4e4e4;
+  padding: 4px 6px;
+}
+menu {
+  padding: 4px;
+}
+menuitem {
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: transparent;
+  transition: background 120ms ease-in-out;
+}
+menuitem:hover {
+  background: #f5f5f5;
+  color: #101010;
+  text-shadow: none;
+}
+
+/* ── Píldoras ─────────────────────────────────────────────────── */
+/* Borde inferior en gris sutil + un hilo de luz arriba. Los grupos se estilan por su nombre:
+   group/launchers -> #launchers, group/status -> #status */
+#custom-power,
+#launchers,
+#clock,
+#custom-rec,
+#custom-updates,
+#tray,
+#workspaces,
+#status {
+  background: rgba(14, 14, 14, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid rgba(120, 120, 120, 0.4);
+  border-radius: 14px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  margin: 0 3px;
+  padding: 0 14px;
+  transition: background 160ms ease-in-out, color 160ms ease-in-out, border-color 160ms ease-in-out;
+}
+
+/* Píldoras de un solo elemento: se iluminan enteras; al pulsar, un poco más */
+#custom-power:hover,
+#custom-updates:hover,
+#clock:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+#custom-power:active,
+#custom-updates:active,
+#clock:active {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Grupos: la píldora queda quieta y se ilumina solo el elemento bajo el cursor (esquinas de 8 px) */
+#launchers,
+#status {
+  padding: 0 4px;
+}
+#custom-term,
+#custom-web,
+#custom-files,
+#idle_inhibitor,
+#bluetooth,
+#network,
+#pulseaudio,
+#battery {
+  margin: 4px 1px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: transparent;
+  transition: background 140ms ease-in-out, color 140ms ease-in-out;
+}
+#custom-term:hover,
+#custom-web:hover,
+#custom-files:hover,
+#idle_inhibitor:hover,
+#bluetooth:hover,
+#network:hover,
+#pulseaudio:hover,
+#battery:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+#custom-term:active,
+#custom-web:active,
+#custom-files:active,
+#idle_inhibitor:active,
+#bluetooth:active,
+#network:active,
+#pulseaudio:active,
+#battery:active {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* Botón de sesión: cuadrado, del alto de la barra */
+#custom-power {
+  color: #cccccc;
+  font-size: 16px;
+  min-width: 38px;
+  padding: 0;
+}
+
+/* Lanzadores: iconos un punto más grandes que el texto */
+#custom-term,
+#custom-web,
+#custom-files {
+  color: #bfbfbf;
+  font-size: 16px;
+}
+
+/* Escritorios: puntos; el actual en blanco */
+#workspaces {
+  padding: 0 6px;
+}
+#workspaces button {
+  background: transparent;
+  color: #6e6e6e;
+  font-size: 9px;
+  padding: 0 5px;
+  margin: 4px 1px;
+  border-radius: 8px;
+  transition: color 140ms ease-in-out, background 140ms ease-in-out;
+}
+#workspaces button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+#workspaces button.active {
+  color: #ffffff;
+}
+
+/* Reloj: serif; cifras de ancho fijo y alineadas (no «bailan» al cambiar el minuto) */
+#clock {
+  font-family: "Cormorant Garamond", "Liberation Serif", "DejaVu Serif", serif;
+  font-size: 16px;
+  font-feature-settings: "tnum, lnum";
+  color: #f5f5f5;
+  padding: 0 18px;
+}
+
+/* Bandeja: iconos inactivos atenuados, los que piden atención resaltan */
+#tray {
+  padding: 0 8px;
+}
+#tray > .passive {
+  -gtk-icon-effect: dim;
+}
+#tray > .needs-attention {
+  -gtk-icon-effect: highlight;
+}
+
+/* Grabando: píldora invertida parpadeante */
+#custom-rec.on {
+  background: #f5f5f5;
+  color: #101010;
+  text-shadow: none;
+  animation: parpadeo 1.4s ease-in-out infinite;
+}
+
+/* Actualizaciones pendientes: texto fuerte (se oculta solo cuando no hay) */
+#custom-updates.pending {
+  color: #ffffff;
+}
+
+/* Estado: reposo, Bluetooth, red y volumen. Apagado/sin conexión = gris; reposo bloqueado = blanco */
+#network.disconnected,
+#pulseaudio.muted,
+#bluetooth.off,
+#idle_inhibitor.deactivated {
+  color: #6e6e6e;
+}
+#idle_inhibitor.activated,
+#bluetooth.connected {
+  color: #ffffff;
+}
+
+/* Batería (dentro de la píldora de estado): sin color, el brillo marca la gravedad */
+#battery.charging,
+#battery.plugged {
+  color: #ffffff;
+}
+#battery.warning:not(.charging) {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.14);
+}
+#battery.critical:not(.charging) {
+  color: #ffffff;
+  font-weight: bold;
+  animation-name: blink;
+  animation-duration: 0.8s;
+  animation-timing-function: steps(2);
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+}
+
+@keyframes parpadeo {
+  50% {
+    opacity: 0.32;
+  }
+}
+
+@keyframes blink {
+  to {
+    background-color: rgba(255, 255, 255, 0.9);
+    color: #101010;
+    text-shadow: none;
+  }
+}

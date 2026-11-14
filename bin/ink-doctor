@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# ink-doctor — revisión rápida de salud y seguridad del sistema. Solo LEE: no cambia nada.
+# Uso: ink-doctor   (si no se lanza desde una terminal, se abre solo en foot)
+# labwc lanza sus hijos con stdin/stdout/stderr en /dev/tty1: «[ -t 1 ]» no basta para
+# saber si hay alguien mirando, así que se descarta la VT del compositor.
+on_terminal() {
+    [ -t 0 ] && [ -t 1 ] || return 1
+    [ "${TERM:-dumb}" != dumb ] || return 1
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        case $(readlink -f "/proc/$$/fd/1" 2>/dev/null) in
+            /dev/tty[0-9]*) return 1 ;;
+        esac
+    fi
+    return 0
+}
+if ! on_terminal && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    if command -v foot >/dev/null 2>&1; then
+        exec foot -T "Estado del sistema" -e bash -c '"$0"; printf "\nEnter para cerrar… "; read -r _' "$0"
+    fi
+    command -v notify-send >/dev/null 2>&1 \
+        && notify-send -u normal "󰋽  Estado del sistema" "No se pudo abrir una terminal: falta foot."
+    exit 1
+fi
+W=0
+ok()   { printf ' \e[32m✔\e[0m %s\n' "$*"; }
+bad()  { printf ' \e[33m!\e[0m %s\n' "$*"; W=$((W + 1)); }
+info() { printf ' \e[2m·\e[0m \e[2m%s\e[0m\n' "$*"; }
+hdr()  { printf '\n\e[1m%s\e[0m\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+# detect_bootloader viene de la librería que instala 1-install.sh; sin ella se informa «unknown»
+[ -r /usr/local/lib/ink/common.sh ] && . /usr/local/lib/ink/common.sh
+command -v detect_bootloader >/dev/null 2>&1 || detect_bootloader() { echo unknown; }
+
+hdr "Sistema"
+run=$(uname -r)
+if [ -d "/usr/lib/modules/$run" ]; then ok "Kernel en uso: $run"
+else bad "El kernel en uso ($run) ya no está instalado: reinicia para cargar el nuevo"; fi
+failed=$({ systemctl --failed --no-legend --plain; systemctl --user --failed --no-legend --plain; } 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+if [ -z "${failed// /}" ]; then ok "Sin servicios fallidos"; else bad "Servicios fallidos: $failed(systemctl status …)"; fi
+use=$(df --output=pcent / | tail -n1 | tr -dc 0-9)
+if [ "${use:-0}" -ge 90 ]; then bad "Disco raíz al ${use}%: libera espacio (4-cleanup.sh)"; else ok "Disco raíz al ${use}%"; fi
+if swapon --show=NAME --noheadings 2>/dev/null | grep -q zram; then ok "zram activo"; else bad "Sin zram (2-optimize.sh)"; fi
+if systemctl is-active --quiet earlyoom; then ok "earlyoom activo (protege de quedarte sin memoria)"; else bad "earlyoom inactivo (2-optimize.sh)"; fi
+if systemctl is-enabled --quiet fstrim.timer 2>/dev/null; then ok "TRIM semanal activo"; else bad "Sin TRIM semanal (2-optimize.sh)"; fi
+errs=$(journalctl -p 3 -b -q --no-pager 2>/dev/null | wc -l)
+if [ "$errs" -gt 20 ]; then bad "$errs errores en el journal de este arranque (journalctl -p 3 -b)"; else ok "Journal: $errs errores en este arranque"; fi
+boot=$(systemd-analyze 2>/dev/null | head -n1); [ -n "$boot" ] && info "$boot"
+
+hdr "Arranque"
+bl=$(detect_bootloader); info "Gestor de arranque: $bl"
+if grep -q GenuineIntel /proc/cpuinfo; then uc=intel-ucode; elif grep -q AuthenticAMD /proc/cpuinfo; then uc=amd-ucode; else uc=""; fi
+if [ -n "$uc" ]; then
+    if pacman -Qq "$uc" &>/dev/null; then ok "Microcódigo instalado ($uc)"; else bad "Falta el microcódigo: sudo pacman -S $uc"; fi
+    info "Comprueba que tu gestor lo carga: journalctl -k -b | grep -i microcode  (si no sale nada, mira el aviso de 1-install.sh)"
+fi
+have efibootmgr || info "Sin efibootmgr no se puede confirmar el gestor de arranque en uso"
+
+hdr "Paquetes"
+if have checkupdates; then
+    n=$(timeout 60 checkupdates 2>/dev/null | wc -l)
+    if [ "$n" -gt 0 ]; then info "$n actualizaciones pendientes (W-u o «Actualizar sistema» en ink-menu)"; else ok "Todo al día"; fi
+fi
+orph=$(pacman -Qdtq 2>/dev/null | wc -l)
+if [ "$orph" -gt 0 ]; then bad "$orph paquetes huérfanos (4-cleanup.sh los quita con confirmación)"; else ok "Sin paquetes huérfanos"; fi
+pn=$(find /etc -xdev \( -name '*.pacnew' -o -name '*.pacsave' \) 2>/dev/null)
+if [ -n "$pn" ]; then bad "Archivos .pacnew/.pacsave pendientes de revisar (pacdiff):"; printf '     %s\n' $pn; else ok "Sin .pacnew pendientes"; fi
+cs=$(du -sh /var/cache/pacman/pkg 2>/dev/null | cut -f1); [ -n "$cs" ] && info "Caché de pacman: $cs"
+
+hdr "32 bits"
+if grep -q '^\[multilib\]' /etc/pacman.conf 2>/dev/null; then
+    n32=$(pacman -Qq 2>/dev/null | grep -c '^lib32-')
+    if [ "$n32" -gt 0 ]; then ok "multilib activo · $n32 paquetes lib32 instalados"; else bad "multilib activo pero sin drivers de 32 bits: sudo pacman -S lib32-mesa"; fi
+else info "multilib desactivado: sin soporte de 32 bits (1-install.sh lo ofrece)"; fi
+
+if have wine; then
+    hdr "Wine"
+    wv=$(wine --version 2>/dev/null)
+    case $wv in *[Ss]taging*) ok "$wv" ;; *) info "$wv (no es Staging; ./6-wine.sh instala wine-staging)" ;; esac
+    have winetricks && ok "winetricks instalado" || bad "Falta winetricks: sudo pacman -S winetricks"
+    have cabextract || bad "Falta cabextract (lo usan casi todos los verbos de winetricks): sudo pacman -S cabextract"
+    [ -n "${WINEARCH:-}" ] && bad "WINEARCH=$WINEARCH está definido en tu entorno: el WoW64 nuevo no admite win32 (quítalo)"
+    pfx="${INK_WINEPREFIX:-${WINEPREFIX:-$HOME/.wine}}"
+    if [ -f "$pfx/system.reg" ]; then ok "Prefijo listo: $pfx"; else info "Sin prefijo en $pfx (./6-wine.sh lo crea)"; fi
+    if [ -e /dev/ntsync ]; then
+        if [ -r /dev/ntsync ] && [ -w /dev/ntsync ]; then ok "ntsync disponible"; else bad "/dev/ntsync sin permisos para tu usuario (reinicia sesión; paquete ntsync-autoload)"; fi
+    else info "Sin ntsync (kernel < 6.14 o módulo no cargado): Wine usa esync/fsync"; fi
+    ls /usr/share/vulkan/icd.d/*.json >/dev/null 2>&1 || bad "Sin controlador Vulkan: DXVK/vkd3d no funcionarán (vulkan-intel / vulkan-radeon / nvidia-utils)"
+fi
+
+hdr "Seguridad"
+if have arch-audit; then
+    v=$(timeout 30 arch-audit -u 2>/dev/null | wc -l)
+    if [ "$v" -gt 0 ]; then bad "$v paquetes con CVE y parche disponible: actualiza (arch-audit -u)"; else ok "arch-audit: nada vulnerable que tenga arreglo"; fi
+else info "Instala arch-audit para vigilar CVEs: sudo pacman -S arch-audit"; fi
+if systemctl is-active --quiet ufw; then ok "Firewall (ufw) activo"; else bad "Firewall inactivo (./3-privacy.sh firewall)"; fi
+if resolvectl status 2>/dev/null | grep -q '+DNSOverTLS'; then ok "DNS cifrado (DoT)"; else bad "DNS sin cifrar (./3-privacy.sh dns)"; fi
+if [ "$(sysctl -n kernel.kptr_restrict 2>/dev/null)" = 2 ] && [ "$(sysctl -n kernel.yama.ptrace_scope 2>/dev/null)" -ge 1 ] 2>/dev/null; then
+    ok "Endurecimiento del kernel aplicado"; else bad "Endurecimiento sin aplicar (./3-privacy.sh hardening)"; fi
+perm=$(stat -c %a "$HOME"); if [ "${perm: -1}" != 0 ]; then bad "Tu carpeta personal es legible por otros usuarios ($perm): chmod 750 ~"; else ok "Carpeta personal privada ($perm)"; fi
+ports=$(ss -tulnH 2>/dev/null | awk '{print $5}' | grep -vE '^(127\.|\[?::1\]?:|.*%lo:)' | sort -u | tr '\n' ' ')
+if [ -n "$ports" ]; then info "Escuchando fuera de localhost: $ports"; else ok "Nada escucha fuera de localhost"; fi
+systemctl is-active --quiet sshd && info "sshd está activo"
+
+hdr "Copias"
+if [ "$(findmnt -no FSTYPE / 2>/dev/null)" = btrfs ]; then
+    # /.snapshots es solo de root: se pregunta a snapper (5-snapshots.sh da acceso con ALLOW_USERS) o, si no, a sudo sin contraseña
+    if sl=$(snapper -c root list 2>/dev/null || sudo -n snapper -c root list 2>/dev/null); then
+        s=$(printf '%s\n' "$sl" | awk -F'|' 'NR > 2 && $1 + 0 > 0' | wc -l)
+        if [ "$s" -gt 0 ]; then ok "$s snapshots de btrfs"; else bad "Sin snapshots (./5-snapshots.sh)"; fi
+    else info "No se pudo leer snapper sin sudo: comprueba con  sudo snapper -c root list"; fi
+    case $bl in
+        grub)   if systemctl is-active --quiet grub-btrfsd; then ok "Snapshots en el menú de GRUB (grub-btrfsd activo)"; else bad "Los snapshots no salen en GRUB (./5-snapshots.sh --bootloader grub)"; fi ;;
+        limine) if systemctl is-active --quiet limine-snapper-sync; then ok "Snapshots en el menú de Limine (limine-snapper-sync activo)"; else bad "Los snapshots no salen en Limine (./5-snapshots.sh --bootloader limine)"; fi ;;
+        *)      info "Gestor «$bl»: los snapshots no salen en el menú de arranque" ;;
+    esac
+    if systemctl is-enabled --quiet btrfs-scrub@-.timer 2>/dev/null; then ok "Scrub mensual de btrfs activo"; else bad "Sin scrub de btrfs (2-optimize.sh)"; fi
+else info "La raíz no es btrfs: sin snapshots automáticos (5-snapshots.sh lo explica)"; fi
+
+printf '\n'
+if [ "$W" -eq 0 ]; then printf '\e[32m✔ Todo en orden.\e[0m\n'; else printf '\e[33m%d aviso(s).\e[0m\n' "$W"; fi

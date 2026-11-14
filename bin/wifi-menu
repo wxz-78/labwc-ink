@@ -1,0 +1,133 @@
+#!/bin/sh
+# wifi-menu — redes Wi-Fi con fuzzel + nmcli. Si no hay forma de pedir la contraseña, abre nmtui.
+pkill -x fuzzel && exit 0
+command -v nmcli >/dev/null 2>&1 || exit 1
+TAB=$(printf '\t')
+# nmcli puede tardar mucho en rendirse (30 s o más): se acota la espera y siempre se avisa del resultado.
+NM_WAIT=20
+
+# Registro para diagnosticar fallos que no caben en una notificación.
+logdir=${XDG_CACHE_HOME:-$HOME/.cache}/ink
+mkdir -p "$logdir" 2>/dev/null
+logfile=$logdir/wifi.log
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$logfile" 2>/dev/null; }
+notify() { command -v notify-send >/dev/null 2>&1 && notify-send "$@"; return 0; }
+brief() { printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -n 3; }
+# Una sola notificación que se va actualizando: así «Conectando…» sigue visible mientras nmcli espera.
+NID=48721
+progress() { notify -u low -t 60000 -r "$NID" "󰖩  Conectando…" "$1"; }
+
+[ "$(nmcli radio wifi)" = enabled ] || { nmcli radio wifi on; sleep 2; }
+nmcli device wifi rescan >/dev/null 2>&1 &
+sleep 1
+tmp=$(mktemp); cfg=$(mktemp)
+trap 'rm -f "$tmp" "$cfg"' EXIT
+# Copia de la config de fuzzel SIN exit-immediately-if-empty: con --prompt-only no hay entradas y, si no, cerraría al instante.
+base=${XDG_CONFIG_HOME:-$HOME/.config}/fuzzel/fuzzel.ini
+[ -f "$base" ] && grep -v '^exit-immediately-if-empty' "$base" > "$cfg"
+
+# ask_pass SSID → imprime la contraseña escrita (oculta con *). Devuelve 1 si cancelas y 3 si este fuzzel no sabe pedirla.
+# OJO: --prompt-only SOLO actúa como «pedir texto» junto a --dmenu; sin él fuzzel se abre como lanzador de aplicaciones.
+HAVE_PROMPT_ONLY=0
+fuzzel --help 2>&1 | grep -q -- --prompt-only && HAVE_PROMPT_ONLY=1
+ask_pass() {
+    [ "$HAVE_PROMPT_ONLY" = 1 ] || return 3
+    fuzzel --config "$cfg" --dmenu --prompt-only "󰌾  $1: " --password </dev/null
+}
+
+# get_pass SSID → deja la clave en $pw. Devuelve 0 si hay clave, 1 si se cancela y 2 si hay que abrir nmtui.
+get_pass() {
+    pw=$(ask_pass "$1"); st=$?
+    case $st in
+        0) [ -n "$pw" ] && return 0
+           notify -u low -t 2500 -r "$NID" "󰖩  Sin cambios" "No escribiste ninguna contraseña."
+           return 1 ;;
+        3) return 2 ;;
+        *) notify -u low -t 2500 -r "$NID" "󰖩  Sin cambios" "Conexión cancelada."
+           return 1 ;;
+    esac
+}
+
+open_nmtui() { rm -f "$tmp" "$cfg"; exec foot -e nmtui; }
+nm_up() { timeout $((NM_WAIT + 5)) nmcli --wait "$NM_WAIT" connection up id "$1" 2>&1; }
+nm_connect() {   # SSID [contraseña]
+    if [ -n "${2:-}" ]; then
+        timeout $((NM_WAIT + 5)) nmcli --wait "$NM_WAIT" device wifi connect "$1" password "$2" 2>&1
+    else
+        timeout $((NM_WAIT + 5)) nmcli --wait "$NM_WAIT" device wifi connect "$1" 2>&1
+    fi
+}
+
+# campos: IN-USE:SIGNAL:SECURITY:SSID — el SSID va al final porque puede llevar «:» (nmcli los escapa como «\:»)
+nmcli -t -f IN-USE,SIGNAL,SECURITY,SSID device wifi list --rescan no | awk -F: '
+    { s = $4; for (i = 5; i <= NF; i++) s = s ":" $i; gsub(/\\:/, ":", s)
+      if (s != "" && !seen[s]++) print $2 "\t" s "\t" $3 "\t" $1 }' | sort -t"$TAB" -k1,1nr > "$tmp"
+sel=$({ while IFS=$TAB read -r sig ssid sec use; do
+            [ "$use" = "*" ] && m="󰄬" || m=" "
+            [ "$sec" = "--" ] && l=" " || l="󰌾"
+            printf '%s  %-28s %3s%%  %s\n' "$m" "$ssid" "$sig" "$l"
+        done < "$tmp"
+        printf '%s\n' "󰖪  Apagar Wi-Fi" "󰒓  Avanzado (nmtui)"
+      } | fuzzel --dmenu --index --lines 9 --width 52 --prompt "󰖩  ")
+[ -n "$sel" ] || exit 0
+n=$(wc -l < "$tmp")
+if [ "$sel" -ge "$n" ]; then
+    [ "$sel" -eq "$n" ] && { nmcli radio wifi off; notify -u low "󰖪  Wi-Fi apagado"; exit 0; }
+    rm -f "$tmp" "$cfg"; exec foot -e nmtui
+fi
+line=$(sed -n "$((sel + 1))p" "$tmp")
+ssid=$(printf '%s' "$line" | cut -f2); sec=$(printf '%s' "$line" | cut -f3)
+log "elegida '$ssid' (seguridad: $sec)"
+
+if nmcli -t -f NAME connection show | grep -qxF -- "$ssid"; then
+    # Ya hay un perfil guardado (red conocida). Si falla y la red tiene clave, se pide de nuevo: puede haber cambiado
+    # o ser la de un intento anterior fallido.
+    progress "$ssid"
+    out=$(nm_up "$ssid"); rc=$?
+    log "up '$ssid' rc=$rc: $(brief "$out")"
+    if [ $rc -ne 0 ] && [ "$sec" != "--" ]; then
+        get_pass "$ssid"; st=$?
+        [ $st -eq 2 ] && open_nmtui
+        [ $st -eq 0 ] || exit 0
+        nmcli connection modify id "$ssid" wifi-sec.psk "$pw" >/dev/null 2>&1
+        progress "$ssid"
+        out=$(nm_up "$ssid"); rc=$?
+        log "up con clave nueva '$ssid' rc=$rc: $(brief "$out")"
+    fi
+elif [ "$sec" = "--" ]; then
+    progress "$ssid"
+    out=$(nm_connect "$ssid"); rc=$?
+    log "connect abierta '$ssid' rc=$rc: $(brief "$out")"
+else
+    tries=0
+    while :; do
+        get_pass "$ssid"; st=$?
+        [ $st -eq 2 ] && open_nmtui
+        [ $st -eq 0 ] || exit 0
+        progress "$ssid"
+        out=$(nm_connect "$ssid" "$pw"); rc=$?
+        log "connect '$ssid' intento $((tries + 1)) rc=$rc: $(brief "$out")"
+        [ $rc -eq 0 ] && break
+        # NetworkManager guarda el perfil aunque la clave sea incorrecta; se borra para que el próximo intento vuelva a pedirla
+        nmcli connection delete id "$ssid" >/dev/null 2>&1
+        tries=$((tries + 1))
+        [ $tries -lt 2 ] || break
+        # Solo se repite si el fallo apunta a la contraseña; si es cobertura, no tiene sentido volver a preguntar.
+        if printf '%s' "$out" | grep -qiE 'secret|password|contrase|802-11-wireless-security'; then
+            notify -u normal -t 3500 -r "$NID" "󰤭  Clave incorrecta" "$ssid
+Prueba otra vez."
+        else
+            break
+        fi
+    done
+fi
+
+if [ $rc -eq 0 ]; then
+    log "conectado '$ssid'"
+    notify -u low -t 3000 -r "$NID" "󰤨  Conectado" "$ssid"
+else
+    log "fallo final '$ssid': $(brief "$out")"
+    notify -u normal -t 10000 -r "$NID" "󰤭  No se pudo conectar" "$ssid
+$(brief "$out")"
+    exit 1
+fi

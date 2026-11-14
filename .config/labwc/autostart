@@ -1,0 +1,60 @@
+#!/bin/sh
+# ~/.config/labwc/autostart — se ejecuta una vez al iniciar sesión (con `sh`).
+# Sin servicios de systemd de usuario: todo se lanza aquí, es lo más simple de leer y depurar.
+
+# run PROG [args…]: lanza en segundo plano solo si el programa existe (un paquete que falte no rompe la sesión)
+run() { command -v "$1" >/dev/null 2>&1 && "$@" >/dev/null 2>&1 & }
+
+# Variables que necesitan los portales XDG y los servicios D-Bus (solo las justas)
+dbus-update-activation-environment --systemd \
+  WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XCURSOR_THEME XCURSOR_SIZE
+
+# Tema de apps GTK/libadwaita (en segundo plano: no retrasa el arranque del escritorio)
+(
+  gs() { gsettings set org.gnome.desktop.interface "$@"; }
+  gs color-scheme 'prefer-dark'
+  gs gtk-theme 'adw-gtk3-dark'
+  gs icon-theme 'Papirus-Dark'
+  gs cursor-theme 'phinger-cursors-light'
+  gs font-name 'JetBrainsMono Nerd Font 10'
+  gs monospace-font-name 'JetBrainsMono Nerd Font 10'
+) >/dev/null 2>&1 &
+
+# Monitores: reaplica lo que configuraste con `monitors` (W-F3: resolución, escala, posición). Sin configurar, labwc usa el modo preferido.
+run monitors restore
+
+# Fondo: el último que elegiste con `wallpaper` (W-w); si no hay, ink.png → cualquier imagen de la carpeta → negro liso.
+# También reanuda la rotación automática si la tenías activada.
+run wallpaper restore
+
+# Luz nocturna: recupera el último nivel (nightlight, W-z). Si estaba apagada no hace nada.
+run nightlight restore
+
+run mako
+# Aviso de batería baja (15 % y 7 %); en un PC de escritorio termina solo
+run battery-watch
+# -c/-s explícitos: waybar usa siempre estos archivos (un ~/.config/waybar/config viejo no los tapa)
+run waybar -c "$HOME/.config/waybar/config.jsonc" -s "$HOME/.config/waybar/style.css"
+
+# Agente polkit (pide contraseña para montar discos, etc.)
+run /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
+
+# Historial del portapapeles (texto e imágenes)
+# (máx. 200 entradas: menos rastro de contraseñas copiadas; «Borrar historial» en ink-menu)
+run wl-paste --type text --watch cliphist -max-items 200 store
+run wl-paste --type image --watch cliphist -max-items 200 store
+
+# Montaje automático de USB/discos externos con aviso (udiskie; sin icono en la bandeja)
+run udiskie --automount --notify
+
+# Inactividad: 5 min bloquea · 5:30 apaga la pantalla (wlopm, si existe) · 15 min suspende (solo con batería).
+# Un solo swayidle; `lock` evita bloquear dos veces. Respeta los inhibidores de reposo de Wayland (vídeo en el navegador, mpv…).
+set -- -w timeout 300 lock
+if command -v wlopm >/dev/null 2>&1; then
+  set -- "$@" timeout 330 "wlopm --off '*'" resume "wlopm --on '*'"
+fi
+set -- "$@" timeout 900 idle-suspend
+set -- "$@" before-sleep lock   # bloquea antes de suspender
+set -- "$@" lock lock           # y cuando logind pide bloquear la sesión (loginctl lock-session)
+if command -v wlopm >/dev/null 2>&1; then set -- "$@" after-resume "wlopm --on '*'"; fi
+run swayidle "$@"

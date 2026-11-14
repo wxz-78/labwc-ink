@@ -1,0 +1,4 @@
+# xdg-desktop-portal-wlr — compartir pantalla (navegador, videollamadas, OBS…).
+# «simple» elige el monitor con slurp (ya instalado): no depende de ningún menú extra.
+[screencast]
+chooser_type=simple

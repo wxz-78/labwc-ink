@@ -1,0 +1,24 @@
+#!/bin/sh
+# audio-switch — elige la salida (altavoces, auriculares, HDMI…) o la entrada con fuzzel.
+# Uso: audio-switch [sink|source]   (por defecto sink). Mueve también lo que ya está sonando.
+kind=${1:-sink}
+case $kind in
+    sink)   what=sinks;   cur=$(pactl get-default-sink);   mv_list=sink-inputs;    mv=move-sink-input;    icon="󰓃" ;;
+    source) what=sources; cur=$(pactl get-default-source); mv_list=source-outputs; mv=move-source-output; icon="󰍬" ;;
+    *) echo "uso: audio-switch [sink|source]" >&2; exit 1 ;;
+esac
+pkill -x fuzzel && exit 0
+tmp=$(mktemp)
+# LC_ALL=C: las etiquetas de pactl se traducen según el idioma; así «Name:» y «Description:» son siempre iguales
+LC_ALL=C pactl list "$what" | awk -F': ' '
+    /^\tName: /        { name = $2 }
+    /^\tDescription: / { if (name !~ /\.monitor$/) print name "\t" substr($0, index($0, ": ") + 2); name = "" }' > "$tmp"
+[ -s "$tmp" ] || { notify-send -u low "$icon  Audio" "No hay dispositivos"; rm -f "$tmp"; exit 1; }
+sel=$(while IFS="$(printf '\t')" read -r n d; do
+          if [ "$n" = "$cur" ]; then printf '󰄬  %s\n' "$d"; else printf '    %s\n' "$d"; fi
+      done < "$tmp" | fuzzel --dmenu --index --lines 6 --width 46 --prompt "$icon  ")
+[ -n "$sel" ] || { rm -f "$tmp"; exit 0; }
+name=$(sed -n "$((sel + 1))p" "$tmp" | cut -f1); desc=$(sed -n "$((sel + 1))p" "$tmp" | cut -f2); rm -f "$tmp"
+pactl set-default-$kind "$name" || exit 1
+pactl list short "$mv_list" | cut -f1 | while read -r id; do pactl "$mv" "$id" "$name" 2>/dev/null; done
+notify-send -u low -t 2000 -h string:x-canonical-private-synchronous:audio "$icon  Audio" "$desc"

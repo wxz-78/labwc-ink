@@ -1,0 +1,40 @@
+#!/bin/sh
+# nightlight — luz nocturna con wlsunset. Uso: nightlight toggle | menu | off | on [K] | auto | restore | status
+# «on» = temperatura fija todo el día; «auto» = cálida solo entre el atardecer y el amanecer.
+# Atardecer/amanecer: NIGHTLIGHT_SUNSET / NIGHTLIGHT_SUNRISE (HH:MM). Cambian con:  NIGHTLIGHT_SUNSET=21:00 nightlight auto
+state=${XDG_STATE_HOME:-$HOME/.local/state}/ink; mkdir -p "$state"
+SUNSET=${NIGHTLIGHT_SUNSET:-20:00}; SUNRISE=${NIGHTLIGHT_SUNRISE:-07:00}
+rd() { v=""; [ -r "$1" ] && read -r v < "$1"; }
+
+stop()  {
+    pkill -x wlsunset 2>/dev/null
+    i=0; while pgrep -x wlsunset >/dev/null && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i + 1)); done   # evita que el viejo resetee el gamma del nuevo
+}
+start() {   # $1 = fijo|auto  $2 = kelvin
+    stop; command -v wlsunset >/dev/null 2>&1 || { notify-send "wlsunset no está instalado" "sudo pacman -S wlsunset"; return 1; }
+    printf '%s %s\n' "$1" "$2" > "$state/nightlight"
+    case $1 in
+        fijo) setsid -f wlsunset -t "$2" -T $(($2 + 1)) -S 07:00 -s 19:00 >/dev/null 2>&1 ;;   # t≈T → temperatura constante
+        auto) setsid -f wlsunset -t "$2" -T 6500 -S "$SUNRISE" -s "$SUNSET" >/dev/null 2>&1 ;;
+    esac
+}
+off() { stop; rm -f "$state/nightlight"; }
+
+menu() {
+    pkill -x fuzzel && exit 0
+    c=$(printf '%s\n' "󰖙  Apagada" "󰖔  Cálida (4500 K)" "󰖔  Noche (3500 K)" "󰖔  Muy cálida (2700 K)" "󰔛  Automática (atardecer)" |
+        fuzzel --dmenu --index --lines 5 --width 30 --prompt "󰍉  ")
+    case $c in 0) off ;; 1) start fijo 4500 ;; 2) start fijo 3500 ;; 3) start fijo 2700 ;; 4) start auto 3500 ;; esac
+}
+
+case "$1" in
+    toggle)  if pgrep -x wlsunset >/dev/null; then off; else start fijo 3500; fi ;;
+    menu)    menu ;;
+    off)     off ;;
+    on)      start fijo "${2:-3500}" ;;
+    auto)    start auto "${2:-3500}" ;;
+    restore) rd "$state/nightlight"; [ -n "$v" ] && { set -- $v; start "$1" "$2"; } ;;
+    status)  if pgrep -x wlsunset >/dev/null; then echo '{"text":"󰖔","class":"on","tooltip":"Luz nocturna: activada"}'
+             else echo '{"text":"󰖙","class":"off","tooltip":"Luz nocturna: apagada"}'; fi ;;
+    *) echo "uso: nightlight toggle|menu|off|on [K]|auto [K]|restore|status" >&2; exit 1 ;;
+esac

@@ -1,0 +1,142 @@
+// Waybar · Ink transparente en grises (labwc). Recarga con: pkill -SIGUSR2 waybar
+{
+  "layer": "top",
+  "position": "top",
+  "height": 38,
+  "margin": "8 10 0 10",
+  "spacing": 0,
+  "reload_style_on_change": true,
+
+  "modules-left": ["custom/power", "group/launchers", "ext/workspaces"],
+  "modules-center": ["clock"],
+  "modules-right": ["custom/rec", "custom/updates", "tray", "group/status"],
+
+  // Menú de sesión (fuzzel): bloquear, suspender, cerrar sesión, reiniciar, apagar
+  "custom/power": {
+    "format": "\u23fb",
+    "tooltip": false,
+    "on-click": "power-menu",
+    "on-click-right": "lock"
+  },
+
+  // Mismos programas que los atajos de labwc (W-Return, W-b, W-e)
+  "group/launchers": {
+    "orientation": "horizontal",
+    "modules": ["custom/term", "custom/web", "custom/files"]
+  },
+  "custom/term":  { "format": "\uf120", "tooltip-format": "Terminal", "on-click": "foot" },
+  "custom/web":   { "format": "\uf0ac", "tooltip-format": "Navegador", "on-click": "helium-browser" },
+  "custom/files": { "format": "\uf07b", "tooltip-format": "Archivos", "on-click": "foot -e yazi", "on-click-right": "thunar" },
+
+  // Escritorios (labwc 4): punto lleno = actual. Requiere waybar >= 0.12; si tu versión no lo trae, el módulo simplemente no aparece.
+  "ext/workspaces": {
+    "format": "{icon}",
+    "format-icons": { "active": "\uf111", "default": "\uf10c" },
+    "on-click": "activate",
+    "sort-by-number": true
+  },
+
+  // Un solo {} con strftime: varios {} sin índice fallan en el reloj de Waybar
+  // Clic: alterna a la fecha larga · rueda sobre el reloj: mes anterior/siguiente en el calendario del tooltip
+  "clock": {
+    "format": "{:%H:%M  ·  %a %d %b}",
+    "format-alt": "{:%A %d de %B de %Y}",
+    "tooltip-format": "<tt>{calendar}</tt>",
+    "calendar": {
+      "mode": "month",
+      "format": {
+        "months":   "<span color=\"#f5f5f5\"><b>{}</b></span>",
+        "weekdays": "<span color=\"#9a9a9a\">{}</span>",
+        "days":     "<span color=\"#bfbfbf\">{}</span>",
+        "today":    "<span color=\"#ffffff\"><b><u>{}</u></b></span>"
+      }
+    },
+    "actions": {
+      "on-scroll-up": "shift_up",
+      "on-scroll-down": "shift_down"
+    }
+  },
+
+  // Visible solo mientras se graba (`rec status` devuelve texto vacío si no). Clic: parar
+  "custom/rec": {
+    "exec": "rec status",
+    "return-type": "json",
+    "interval": "once",
+    "signal": 8,
+    "on-click": "rec stop"
+  },
+
+  // Actualizaciones pendientes (repos + AUR); se oculta si todo está al día
+  "custom/updates": {
+    "exec": "ink-update status",
+    "return-type": "json",
+    "interval": 1800,
+    "signal": 9,
+    "on-click": "ink-update run"
+  },
+
+  "tray": { "icon-size": 18, "spacing": 10 },
+
+  // «Café»: clic para impedir que la pantalla se bloquee o apague (vídeos, presentaciones). Encendido = icono blanco
+  "idle_inhibitor": {
+    "format": "{icon}",
+    "format-icons": { "activated": "\uf0f4", "deactivated": "\uf0f4" },
+    "tooltip-format-activated": "Reposo bloqueado: la pantalla no se apagará",
+    "tooltip-format-deactivated": "Reposo normal (clic: mantener la pantalla encendida)"
+  },
+
+  // Solo aparece si el equipo tiene Bluetooth (sin controlador, el formato vacío oculta el módulo)
+  "bluetooth": {
+    "format": "\uf294",
+    "format-off": "\uf294",
+    "format-disabled": "",
+    "format-no-controller": "",
+    "format-connected": "\uf294  {num_connections}",
+    "tooltip-format": "{controller_alias} · {status}",
+    "tooltip-format-connected": "{device_enumerate}",
+    "tooltip-format-enumerate-connected": "{device_alias}",
+    "on-click": "foot -T Bluetooth -e bluetui"
+  },
+
+  // Red y volumen juntos; la batería va aparte
+  "group/status": {
+    "orientation": "horizontal",
+    "modules": ["idle_inhibitor", "bluetooth", "network", "pulseaudio", "battery"]
+  },
+
+  "network": {
+    "format-wifi": "\uf1eb  Wi-Fi",
+    "format-ethernet": "\uf0e8  LAN",
+    "format-disconnected": "\uf1eb  Off",
+    "tooltip-format-wifi": "{essid} · {signalStrength}%",
+    "tooltip-format-ethernet": "{ifname} · {ipaddr}",
+    "tooltip-format-disconnected": "sin conexión",
+    "on-click": "wifi-menu",
+    "on-click-right": "foot -e nmtui"
+  },
+  "pulseaudio": {
+    "format": "\uf028  {volume}%",
+    "format-muted": "\uf026  mute",
+    "min-length": 8,
+    "align": 0.5,
+    "tooltip-format": "{desc}",
+    "on-click": "foot -e wiremix",
+    "on-click-middle": "audio-switch sink",
+    "on-click-right": "osd vol-mute",
+    "on-scroll-up": "osd vol-up",
+    "on-scroll-down": "osd vol-down"
+  },
+
+  // Solo icono y porcentaje; el tiempo restante queda en el tooltip
+  "battery": {
+    "states": { "warning": 25, "critical": 12 },
+    "format": "{icon}  {capacity}%",
+    "format-charging": "\uf0e7  {capacity}%",
+    "format-plugged": "\uf1e6  {capacity}%",
+    "format-full": "\uf240  {capacity}%",
+    "min-length": 8,
+    "align": 0.5,
+    "format-icons": ["\uf244", "\uf243", "\uf242", "\uf241", "\uf240"],
+    "tooltip-format": "{timeTo}"
+  }
+}

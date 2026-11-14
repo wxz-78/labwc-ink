@@ -1,0 +1,37 @@
+name: check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Si llega otro push a la misma rama, se cancela la ejecución anterior.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar validadores
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxml2-utils jq shellcheck fish
+      - name: Validar el repositorio (sintaxis, XML, atajos, paquetes, instalación en HOME temporal)
+        run: ./check.sh
+
+  # Los scripts son para Arch: se comprueban también en un contenedor de Arch (bash, coreutils y shellcheck reales).
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Instalar git y validadores
+        run: pacman -Syu --noconfirm --needed git libxml2 jq shellcheck fish diffutils findutils grep sed gawk
+      - uses: actions/checkout@v4
+      - name: Validar el repositorio
+        run: ./check.sh

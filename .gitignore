@@ -1,0 +1,13 @@
+# backups y temporales
+*.bak
+*.orig
+*.swp
+*~
+*.log
+__pycache__/
+.DS_Store
+
+# estado local de las herramientas (nunca se versiona)
+.cache/
+.local/state/
+.config/ink/
