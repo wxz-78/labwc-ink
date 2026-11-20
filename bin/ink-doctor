@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# ink-doctor — revisión rápida de salud y seguridad del sistema. Solo LEE: no cambia nada.
+# Uso: ink-doctor   (si no se lanza desde una terminal, se abre solo en foot)
+# labwc lanza sus hijos con stdin/stdout/stderr en /dev/tty1: «[ -t 1 ]» no basta para
+# saber si hay alguien mirando, así que se descarta la VT del compositor.
+on_terminal() {
+    [ -t 0 ] && [ -t 1 ] || return 1
+    [ "${TERM:-dumb}" != dumb ] || return 1
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        case $(readlink -f "/proc/$$/fd/1" 2>/dev/null) in
+            /dev/tty[0-9]*) return 1 ;;
+        esac
+    fi
+    return 0
+}
+if ! on_terminal && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    if command -v foot >/dev/null 2>&1; then
+        exec foot -T "Estado del sistema" -e bash -c '"$0"; printf "\nEnter para cerrar… "; read -r _' "$0"
+    fi
+    command -v notify-send >/dev/null 2>&1 \
+        && notify-send -u normal "󰋽  Estado del sistema" "No se pudo abrir una terminal: falta foot."
+    exit 1
+fi
+W=0
+ok()   { printf ' \e[32m✔\e[0m %s\n' "$*"; }
+bad()  { printf ' \e[33m!\e[0m %s\n' "$*"; W=$((W + 1)); }
+info() { printf ' \e[2m·\e[0m \e[2m%s\e[0m\n' "$*"; }
+hdr()  { printf '\n\e[1m%s\e[0m\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+# detect_bootloader y hw_* vienen de las librerías que instala 1-install.sh; sin ellas se informa «unknown»
+[ -r /usr/local/lib/ink/common.sh ] && . /usr/local/lib/ink/common.sh
+command -v detect_bootloader >/dev/null 2>&1 || detect_bootloader() { echo unknown; }
+
+hdr "Sistema"
+run=$(uname -r)
+if [ -d "/usr/lib/modules/$run" ]; then ok "Kernel en uso: $run"
+else bad "El kernel en uso ($run) ya no está instalado: reinicia para cargar el nuevo"; fi
+failed=$({ systemctl --failed --no-legend --plain; systemctl --user --failed --no-legend --plain; } 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+if [ -z "${failed// /}" ]; then ok "Sin servicios fallidos"; else bad "Servicios fallidos: $failed(systemctl status …)"; fi
+use=$(df --output=pcent / | tail -n1 | tr -dc 0-9)
+if [ "${use:-0}" -ge 90 ]; then bad "Disco raíz al ${use}%: libera espacio (4-cleanup.sh)"; else ok "Disco raíz al ${use}%"; fi
+if swapon --show=NAME --noheadings 2>/dev/null | grep -q zram; then ok "zram activo"; else bad "Sin zram (2-optimize.sh)"; fi
+if systemctl is-active --quiet earlyoom; then ok "earlyoom activo (protege de quedarte sin memoria)"; else bad "earlyoom inactivo (2-optimize.sh)"; fi
+if systemctl is-enabled --quiet fstrim.timer 2>/dev/null; then ok "TRIM semanal activo"; else bad "Sin TRIM semanal (2-optimize.sh)"; fi
+errs=$(journalctl -p 3 -b -q --no-pager 2>/dev/null | wc -l)
+if [ "$errs" -gt 20 ]; then bad "$errs errores en el journal de este arranque (journalctl -p 3 -b)"; else ok "Journal: $errs errores en este arranque"; fi
+if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ]; then ok "Hora sincronizada"
+else bad "Hora sin sincronizar (¿sin red? systemctl status systemd-timesyncd)"; fi
+boot=$(systemd-analyze 2>/dev/null | head -n1); [ -n "$boot" ] && info "$boot"
+
+# Arranque y hardware: el escaneo a fondo vive en lib/hwscan.sh (el informe completo: ink-hw)
+if command -v hw_report_boot >/dev/null 2>&1; then
+    HW_BRIEF=1   # aquí solo ✔ y avisos; el detalle completo (modelos, drivers, discos…) está en ink-hw
+    hw_report_boot
+    hw_report_hardware
+    hw_report_gaming
+    hw_report_security
+    unset HW_BRIEF
+    info "Detalle completo del hardware, el arranque y los ajustes de juego: ink-hw"
+else
+    hdr "Arranque"
+    info "Falta /usr/local/lib/ink/hwscan.sh (vuelve a ejecutar ./1-install.sh): no se puede revisar el arranque ni el hardware"
+fi
+bl=$(detect_bootloader)   # lo usa la sección «Copias»
+
+hdr "Sesión"
+if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    miss=""
+    for p in waybar mako swayidle swaybg; do pgrep -x "$p" >/dev/null || miss="$miss $p"; done
+    pgrep -f polkit-gnome-authentication-agent >/dev/null || miss="$miss polkit-gnome"
+    pgrep -x gamepad-awake >/dev/null || miss="$miss gamepad-awake"
+    command -v wlrctl >/dev/null 2>&1 || bad "Falta wlrctl: sin él la pantalla se bloqueará jugando con mando (./1-install.sh lo instala)"
+    if [ -z "$miss" ]; then ok "Barra, notificaciones, reposo, fondo y agente polkit en marcha"
+    else bad "No están en marcha:$miss (mira ~/.cache/ink/autostart.log)"; fi
+    alog="${XDG_CACHE_HOME:-$HOME/.cache}/ink/autostart.log"
+    if [ -s "$alog" ]; then
+        nf=$(sed -n 's/.*no está instalado: //p' "$alog" | sort -u | tr '\n' ' ')
+        [ -n "$nf" ] && bad "autostart no encontró: $nf(instálalos con ./1-install.sh)"
+    fi
+    if wpctl get-volume @DEFAULT_AUDIO_SINK@ >/dev/null 2>&1; then ok "Audio (PipeWire) responde"
+    else bad "PipeWire/WirePlumber no responde (systemctl --user status pipewire wireplumber)"; fi
+    # Llavero: sin desbloquear, el navegador no puede guardar contraseñas ni cookies cifradas
+    ks=$(busctl --user get-property org.freedesktop.secrets /org/freedesktop/secrets/collection/login \
+         org.freedesktop.Secret.Collection Locked 2>/dev/null)
+    case $ks in
+        *false*) ok "Llavero desbloqueado" ;;
+        *true*)  bad "Llavero bloqueado: el navegador no guardará contraseñas (usa la misma clave que tu usuario)" ;;
+        *)       info "Llavero aún sin crear (se crea al abrir el navegador por primera vez)" ;;
+    esac
+    if pacman -Qq xdg-desktop-portal-wlr &>/dev/null && [ -f "$HOME/.config/xdg-desktop-portal/labwc-portals.conf" ]; then
+        ok "Portal de capturas y pantalla compartida configurado"
+    else bad "Falta el portal de pantalla compartida (xdg-desktop-portal-wlr + labwc-portals.conf: ./dotfiles.sh)"; fi
+else
+    info "Sin sesión gráfica: se omiten las comprobaciones de escritorio"
+fi
+
+hdr "Firmware"
+if have fwupdmgr; then
+    timeout 25 fwupdmgr get-updates --no-metadata-check </dev/null >/dev/null 2>&1; rc=$?
+    case $rc in   # fwupdmgr: 0 = hay actualizaciones · 2 = nada que hacer
+        0)   bad "Hay actualizaciones de firmware: fwupdmgr update" ;;
+        2)   ok "Firmware al día (o sin dispositivos actualizables)" ;;
+        124) info "fwupd tardó demasiado: prueba  fwupdmgr get-updates" ;;
+        *)   info "No se pudo consultar fwupd (¿sin metadatos? fwupdmgr refresh)" ;;
+    esac
+else info "fwupd no instalado (sudo pacman -S fwupd)"; fi
+
+bat=""
+for d in /sys/class/power_supply/*; do
+    [ "$(cat "$d/type" 2>/dev/null)" = Battery ] && [ "$(cat "$d/scope" 2>/dev/null)" != Device ] && { bat=$d; break; }
+done
+if [ -n "$bat" ]; then
+    hdr "Portátil"
+    if systemctl is-active --quiet tlp; then ok "TLP activo (ahorro de batería)"; else bad "TLP inactivo (./2-optimize.sh)"; fi
+    if systemctl is-active --quiet power-profiles-daemon && systemctl is-active --quiet tlp; then
+        bad "TLP y power-profiles-daemon activos a la vez: se pisan (sudo systemctl disable --now power-profiles-daemon)"; fi
+    # Salud de la batería: capacidad actual a plena carga frente a la de fábrica
+    full=$(cat "$bat/energy_full" "$bat/charge_full" 2>/dev/null | head -n1)
+    design=$(cat "$bat/energy_full_design" "$bat/charge_full_design" 2>/dev/null | head -n1)
+    if [ "${design:-0}" -gt 0 ] 2>/dev/null && [ "${full:-0}" -gt 0 ] 2>/dev/null; then
+        h=$((full * 100 / design))
+        if [ "$h" -lt 70 ]; then bad "Batería al ${h}% de su capacidad original: está desgastada"; else ok "Salud de la batería: ${h}%"; fi
+    fi
+    [ -f /etc/systemd/logind.conf.d/10-ink.conf ] && ok "Tapa y botón de encendido configurados" \
+        || info "Tapa y botón con los valores de fábrica de systemd (./2-optimize.sh)"
+fi
+
+hdr "Paquetes"
+if have checkupdates; then
+    n=$(timeout 60 checkupdates 2>/dev/null | wc -l)
+    if [ "$n" -gt 0 ]; then info "$n actualizaciones pendientes (W-u o «Actualizar sistema» en ink-menu)"; else ok "Todo al día"; fi
+fi
+orph=$(pacman -Qdtq 2>/dev/null | wc -l)
+if [ "$orph" -gt 0 ]; then bad "$orph paquetes huérfanos (4-cleanup.sh los quita con confirmación)"; else ok "Sin paquetes huérfanos"; fi
+mapfile -t pn < <(find /etc -xdev \( -name '*.pacnew' -o -name '*.pacsave' \) 2>/dev/null)
+if [ ${#pn[@]} -gt 0 ]; then bad "Archivos .pacnew/.pacsave pendientes de revisar (pacdiff):"; printf '     %s\n' "${pn[@]}"; else ok "Sin .pacnew pendientes"; fi
+cs=$(du -sh /var/cache/pacman/pkg 2>/dev/null | cut -f1); [ -n "$cs" ] && info "Caché de pacman: $cs"
+
+hdr "32 bits"
+if grep -q '^\[multilib\]' /etc/pacman.conf 2>/dev/null; then
+    n32=$(pacman -Qq 2>/dev/null | grep -c '^lib32-')
+    if [ "$n32" -gt 0 ]; then ok "multilib activo · $n32 paquetes lib32 instalados"; else bad "multilib activo pero sin drivers de 32 bits: sudo pacman -S lib32-mesa"; fi
+else info "multilib desactivado: sin soporte de 32 bits (1-install.sh lo ofrece)"; fi
+
+if have wine; then
+    hdr "Wine"
+    wv=$(wine --version 2>/dev/null)
+    case $wv in *[Ss]taging*) ok "$wv" ;; *) info "$wv (no es Staging; ./6-wine.sh instala wine-staging)" ;; esac
+    have winetricks && ok "winetricks instalado" || bad "Falta winetricks: sudo pacman -S winetricks"
+    have cabextract || bad "Falta cabextract (lo usan casi todos los verbos de winetricks): sudo pacman -S cabextract"
+    have Xwayland && ok "Xwayland instalado (Wine lo usa para sus ventanas)" || bad "Falta Xwayland: sudo pacman -S xorg-xwayland (sin él Wine no abre ventanas)"
+    [ -n "${WINEARCH:-}" ] && bad "WINEARCH=$WINEARCH está definido en tu entorno: el WoW64 nuevo no admite win32 (quítalo)"
+    pfx="${INK_WINEPREFIX:-${WINEPREFIX:-$HOME/.wine}}"
+    if [ -f "$pfx/system.reg" ]; then ok "Prefijo listo: $pfx"; else info "Sin prefijo en $pfx (./6-wine.sh lo crea)"; fi
+    if [ -e /dev/ntsync ]; then
+        if [ -r /dev/ntsync ] && [ -w /dev/ntsync ]; then ok "ntsync disponible"; else bad "/dev/ntsync sin permisos para tu usuario (reinicia sesión; paquete ntsync-autoload)"; fi
+    else info "Sin ntsync (kernel < 6.14 o módulo no cargado): Wine usa esync/fsync"; fi
+    if pacman -Qq game-devices-udev >/dev/null 2>&1 || pacman -Qq steam-devices >/dev/null 2>&1; then ok "Reglas udev de mandos instaladas"
+    else info "Sin reglas udev de mandos: algunos no funcionarán sin permisos (./6-wine.sh instala game-devices-udev)"; fi
+    if have gamemoderun; then
+        if getent group gamemode >/dev/null && ! id -nG | tr ' ' '\n' | grep -qx gamemode; then
+            info "gamemode instalado, pero no estás en el grupo «gamemode»: sudo usermod -aG gamemode \$USER (y reinicia sesión)"
+        else ok "gamemode instalado"; fi
+    else info "Sin gamemode (opcional: ./6-wine.sh lo instala; se usa con INK_GAMEMODE=1)"; fi
+    have gamescope && ok "gamescope instalado (INK_GAMESCOPE=1 ink-wine juego.exe)" || info "Sin gamescope (opcional: ./6-wine.sh lo instala)"
+    if ls /usr/share/vulkan/icd.d/*.json >/dev/null 2>&1; then
+        if [ -f "$pfx/user.reg" ] && grep -qiE '^"\*?d3d11"="native' "$pfx/user.reg"; then ok "DXVK activo en el prefijo (Direct3D sobre Vulkan)"
+        elif [ -f "$pfx/user.reg" ]; then bad "DXVK no está en el prefijo: los juegos irán mucho más lentos. Arréglalo con: ink-wine dxvk"; fi
+    else bad "Sin controlador Vulkan: DXVK/vkd3d no funcionarán (vulkan-intel / vulkan-radeon / nvidia-utils)"; fi
+fi
+
+hdr "Seguridad"
+if have arch-audit; then
+    v=$(timeout 30 arch-audit -u 2>/dev/null | wc -l)
+    if [ "$v" -gt 0 ]; then bad "$v paquetes con CVE y parche disponible: actualiza (arch-audit -u)"; else ok "arch-audit: nada vulnerable que tenga arreglo"; fi
+else info "Instala arch-audit para vigilar CVEs: sudo pacman -S arch-audit"; fi
+if systemctl is-active --quiet ufw; then ok "Firewall (ufw) activo"; else bad "Firewall inactivo (./3-privacy.sh firewall)"; fi
+if resolvectl status 2>/dev/null | grep -q '+DNSOverTLS'; then ok "DNS cifrado (DoT)"; else bad "DNS sin cifrar (./3-privacy.sh dns)"; fi
+if [ "$(sysctl -n kernel.kptr_restrict 2>/dev/null)" = 2 ] && [ "$(sysctl -n kernel.yama.ptrace_scope 2>/dev/null)" -ge 1 ] 2>/dev/null; then
+    ok "Endurecimiento del kernel aplicado"; else bad "Endurecimiento sin aplicar (./3-privacy.sh hardening)"; fi
+if grep -qE '^SigLevel.*(Never|TrustAll)' /etc/pacman.conf 2>/dev/null; then
+    bad "pacman acepta paquetes sin verificar su firma (SigLevel Never/TrustAll en /etc/pacman.conf): ¿es intencionado? Lo normal es «Required DatabaseOptional»"
+else ok "pacman verifica las firmas de los paquetes"; fi
+for d in "$HOME/.ssh" "$HOME/.gnupg"; do
+    [ -d "$d" ] || continue
+    p=$(stat -c %a "$d"); if [ "$p" != 700 ]; then bad "$d tiene permisos $p: chmod 700 $d"; fi
+done
+perm=$(stat -c %a "$HOME"); if [ "${perm: -1}" != 0 ]; then bad "Tu carpeta personal es legible por otros usuarios ($perm): chmod 750 ~"; else ok "Carpeta personal privada ($perm)"; fi
+ports=$(ss -tulnH 2>/dev/null | awk '{print $5}' | grep -vE '^(127\.|\[?::1\]?:|.*%lo:)' | sort -u | tr '\n' ' ')
+if [ -n "$ports" ]; then info "Escuchando fuera de localhost: $ports"; else ok "Nada escucha fuera de localhost"; fi
+systemctl is-active --quiet sshd && info "sshd está activo"
+
+hdr "Copias"
+if [ "$(findmnt -no FSTYPE / 2>/dev/null)" = btrfs ]; then
+    # /.snapshots es solo de root: se pregunta a snapper (5-snapshots.sh da acceso con ALLOW_USERS) o, si no, a sudo sin contraseña
+    if sl=$(snapper -c root list 2>/dev/null || sudo -n snapper -c root list 2>/dev/null); then
+        s=$(printf '%s\n' "$sl" | awk -F'|' 'NR > 2 && $1 + 0 > 0' | wc -l)
+        if [ "$s" -gt 0 ]; then ok "$s snapshots de btrfs"; else bad "Sin snapshots (./5-snapshots.sh)"; fi
+    else info "No se pudo leer snapper sin sudo: comprueba con  sudo snapper -c root list"; fi
+    case $bl in
+        grub)   if systemctl is-active --quiet grub-btrfsd; then ok "Snapshots en el menú de GRUB (grub-btrfsd activo)"; else bad "Los snapshots no salen en GRUB (./5-snapshots.sh --bootloader grub)"; fi ;;
+        limine) if systemctl is-active --quiet limine-snapper-sync; then ok "Snapshots en el menú de Limine (limine-snapper-sync activo)"; else bad "Los snapshots no salen en Limine (./5-snapshots.sh --bootloader limine)"; fi ;;
+        *)      info "Gestor «$bl»: los snapshots no salen en el menú de arranque" ;;
+    esac
+    if systemctl is-enabled --quiet btrfs-scrub@-.timer 2>/dev/null; then ok "Scrub mensual de btrfs activo"; else bad "Sin scrub de btrfs (2-optimize.sh)"; fi
+else info "La raíz no es btrfs: sin snapshots automáticos (5-snapshots.sh lo explica)"; fi
+
+printf '\n'
+if [ "$W" -eq 0 ]; then printf '\e[32m✔ Todo en orden.\e[0m\n'; else printf '\e[33m%d aviso(s).\e[0m\n' "$W"; fi

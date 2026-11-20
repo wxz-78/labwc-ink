@@ -1,0 +1,44 @@
+# Ink — aplicaciones predeterminadas. El navegador lo fija 1-install.sh (xdg-settings), no está aquí.
+# Se listan varios .desktop por tipo: se usa el primero que esté instalado.
+[Default Applications]
+inode/directory=thunar.desktop;
+application/pdf=org.pwmt.zathura.desktop;org.pwmt.zathura-pdf-mupdf.desktop;
+image/png=imv.desktop;
+image/jpeg=imv.desktop;
+image/gif=imv.desktop;
+image/webp=imv.desktop;
+image/bmp=imv.desktop;
+image/svg+xml=imv.desktop;
+video/mp4=mpv.desktop;
+video/x-matroska=mpv.desktop;
+video/webm=mpv.desktop;
+video/quicktime=mpv.desktop;
+video/x-msvideo=mpv.desktop;
+audio/mpeg=mpv.desktop;
+audio/flac=mpv.desktop;
+audio/ogg=mpv.desktop;
+audio/x-wav=mpv.desktop;
+audio/mp4=mpv.desktop;
+image/avif=imv.desktop;
+image/tiff=imv.desktop;
+video/mpeg=mpv.desktop;
+video/ogg=mpv.desktop;
+video/x-flv=mpv.desktop;
+video/x-ms-wmv=mpv.desktop;
+video/mp2t=mpv.desktop;
+audio/aac=mpv.desktop;
+audio/opus=mpv.desktop;
+audio/x-flac=mpv.desktop;
+audio/x-opus+ogg=mpv.desktop;
+audio/x-vorbis+ogg=mpv.desktop;
+application/epub+zip=org.pwmt.zathura.desktop;org.pwmt.zathura-pdf-mupdf.desktop;
+# Archivos comprimidos: file-roller (se abren con doble clic en Thunar)
+application/zip=org.gnome.FileRoller.desktop;
+application/gzip=org.gnome.FileRoller.desktop;
+application/vnd.rar=org.gnome.FileRoller.desktop;
+application/x-7z-compressed=org.gnome.FileRoller.desktop;
+application/x-tar=org.gnome.FileRoller.desktop;
+application/x-compressed-tar=org.gnome.FileRoller.desktop;
+application/x-bzip-compressed-tar=org.gnome.FileRoller.desktop;
+application/x-xz-compressed-tar=org.gnome.FileRoller.desktop;
+application/x-zstd-compressed-tar=org.gnome.FileRoller.desktop;

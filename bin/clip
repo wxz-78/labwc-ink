@@ -1,0 +1,7 @@
+#!/bin/sh
+# clip — historial del portapapeles: elige una entrada y se copia. Un segundo llamado cierra el selector.
+# (Vive en un script y no dentro de rc.xml: ahí labwc puede interpretar los «$» antes de que los vea sh.)
+pkill -x fuzzel && exit 0
+id=$(cliphist list | fuzzel --dmenu) || exit 0
+[ -n "$id" ] || exit 0   # Esc o selector vacío: no se pega nada
+printf '%s\n' "$id" | cliphist decode | wl-copy

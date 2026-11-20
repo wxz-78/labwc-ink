@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# ink-wine — lanzador de Wine con el entorno afinado (prefijo de ./6-wine.sh).
+#   ink-wine programa.exe [args]     ejecuta (.exe, .msi, .bat/.cmd) desde su propia carpeta
+#   ink-wine cfg                     winecfg
+#   ink-wine tricks verbo…           winetricks sobre este prefijo
+#   ink-wine dxvk                    instala/actualiza DXVK y vkd3d-proton en el prefijo (Direct3D sobre Vulkan: más FPS; para prefijos creados sin ellos)
+#   ink-wine builtin                 quita los overrides de DXVK/vkd3d del prefijo (vuelve al Direct3D de Wine; no borra archivos)
+#   ink-wine kill                    cierra todo lo de Wine (wineserver -k)
+#   ink-wine new NOMBRE              crea un prefijo limpio aparte (~/.local/share/ink-wine/NOMBRE) para probar o aislar un programa
+#   ink-wine tweaks                  aplica a este prefijo los ajustes de ./6-wine.sh (sin diálogo de fallos, fuentes ClearType): útil en un prefijo antiguo
+#   ink-wine dpi N                   tamaño de la interfaz de Windows (96 = normal; 120/144/192 en pantallas grandes o de alta densidad)
+#   ink-wine dark | light            paleta oscura (a juego con el escritorio) o la de Wine por defecto en los controles clásicos
+#   ink-wine grab on|off             fuerza la captura del ratón en ventanas a pantalla completa (si el ratón se escapa en un juego)
+#   ink-wine desktop WxH|off         escritorio virtual de Wine (p. ej. 1920x1080): el juego queda dentro de una ventana y el ratón no se escapa
+#   ink-wine info                    versión, prefijo, ntsync, Vulkan y verbos instalados
+#   ink-wine pad [check]             repara los overrides dinput/xinput que ocultan el mando, lista los mandos
+#                                    detectados y abre el Panel de control → Mandos (joy.cpl). «check» solo diagnostica.
+# Variables:  INK_WINEPREFIX=ruta (por defecto el prefijo de Wine, ~/.wine) · INK_GAMEMODE=1 (con gamemoderun si está instalado)
+#             DXVK_HUD=fps (se respeta) · INK_WINEDEBUG=err+all (por defecto fixme-all: los errores SÍ salen en la terminal)
+#             INK_WINE_BUILTIN=1 (ignora DXVK/vkd3d del prefijo para esta ejecución: prueba si la ventana en negro es culpa de ellos)
+#             INK_WINE_NATIVE_INPUT=1 (conserva un dinput8/xinput nativo del prefijo: por defecto se fuerza el de Wine para ver el mando)
+#             INK_PULSE_LATENCY=60 (ms; 0 = no tocar)
+#             INK_GAMESCOPE=1 (ejecuta dentro de gamescope: ventana aislada, ratón capturado, escalado; INK_GAMESCOPE_ARGS="-f" por defecto,
+#                              p. ej. INK_GAMESCOPE_ARGS="-W 2560 -H 1440 -w 1920 -h 1080 -f")
+#             INK_WINE_DESKTOP=WxH (solo esta ejecución, en un escritorio virtual de Wine; no cambia el prefijo)
+PREFIX_DEFAULT="$HOME/.wine"
+case "${1:-}" in ""|-h|--help) sed -n '2,/^[^#]/{/^[^#]/!p}' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+command -v wine >/dev/null 2>&1 || { echo "wine no está instalado: ejecuta ./6-wine.sh" >&2; exit 1; }
+
+unset WINEARCH   # un WINEARCH=win32 heredado rompe el nuevo WoW64
+export WINEPREFIX="${INK_WINEPREFIX:-${WINEPREFIX:-$PREFIX_DEFAULT}}"
+export WINEDEBUG="${INK_WINEDEBUG:-${WINEDEBUG:-fixme-all}}"   # sin «fixme», pero con errores: si algo falla, la terminal lo dice
+# Mandos: joy.cpl y los juegos enumeran el mando con dinput8.dll de Wine. Si el prefijo arrastra
+# *dinput8=native (winetricks antiguo) y esa DLL está rota, Wine NO ve ningún mando aunque Linux sí lo vea.
+# Forzamos la DLL integrada en cada ejecución, sin tocar el prefijo, salvo INK_WINE_NATIVE_INPUT=1.
+INK_USER_DLLOVERRIDES=""
+IFS=';,' read -r -a _ink_ov <<< "${WINEDLLOVERRIDES:-}"
+for _o in "${_ink_ov[@]}"; do
+  if [ "${INK_WINE_NATIVE_INPUT:-0}" != 1 ]; then
+    case ${_o#\*} in dinput8=*) continue ;; esac
+  fi
+  INK_USER_DLLOVERRIDES+="${INK_USER_DLLOVERRIDES:+;}$_o"
+done
+if [ "${INK_WINE_NATIVE_INPUT:-0}" = 1 ]; then
+  WINEDLLOVERRIDES="$INK_USER_DLLOVERRIDES"
+else
+  WINEDLLOVERRIDES="dinput8=b${INK_USER_DLLOVERRIDES:+;$INK_USER_DLLOVERRIDES}"
+fi
+WINEDLLOVERRIDES="winemenubuilder.exe=d${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"   # sin accesos ni asociaciones de Wine
+# Direct3D integrado de Wine en vez de DXVK/vkd3d (solo para esta ejecución; no toca el prefijo)
+[ "${INK_WINE_BUILTIN:-0}" = 1 ] && WINEDLLOVERRIDES="$WINEDLLOVERRIDES;d3d8,d3d9,d3d10core,d3d11,d3d12,d3d12core,dxgi=b"
+export WINEDLLOVERRIDES
+export DXVK_LOG_LEVEL="${DXVK_LOG_LEVEL:-warn}"
+export WINETRICKS_LATEST_VERSION_CHECK=disabled
+# winepulse con PipeWire: un colchón de 60 ms evita el audio entrecortado en muchos juegos
+[ "${INK_PULSE_LATENCY:-60}" = 0 ] || export PULSE_LATENCY_MSEC="${PULSE_LATENCY_MSEC:-${INK_PULSE_LATENCY:-60}}"
+
+prefix_ok() { [ -f "$WINEPREFIX/system.reg" ] || { echo "No hay prefijo en $WINEPREFIX: ejecuta ./6-wine.sh" >&2; exit 1; }; }
+# winemenubuilder: el override «d» evita los accesos; borrar su entrada en RunServices evita además
+# el error 126 que Wine 11 deja en la terminal cada vez que arranca el prefijo.
+disable_menu_builder() {
+  wine reg add 'HKCU\Software\Wine\DllOverrides' /v winemenubuilder.exe /t REG_SZ /d d /f >/dev/null 2>&1
+  wine reg delete 'HKLM\Software\Microsoft\Windows\CurrentVersion\RunServices' /v winemenubuilder /f >/dev/null 2>&1
+}
+# Ajustes de estabilidad y estética del prefijo (los mismos que aplica ./6-wine.sh; idempotentes)
+apply_tweaks() {
+  wine reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f >/dev/null 2>&1
+  wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothing /t REG_SZ /d 2 /f >/dev/null 2>&1
+  wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d 2 /f >/dev/null 2>&1
+  wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWORD /d 1 /f >/dev/null 2>&1
+  wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingGamma /t REG_DWORD /d 1400 /f >/dev/null 2>&1
+  wineserver -w
+}
+
+case "${1:-}" in
+  cfg)    prefix_ok; exec winecfg ;;
+  kill)   exec wineserver -k ;;
+  dxvk)
+    prefix_ok
+    ls /usr/share/vulkan/icd.d/*.json >/dev/null 2>&1 || { echo "Sin controlador Vulkan (vulkan-intel / vulkan-radeon / nvidia-utils): DXVK abriría ventanas en negro." >&2; exit 1; }
+    winetricks -q dxvk vkd3d; rc=$?
+    wineserver -w
+    [ $rc -eq 0 ] && echo "DXVK y vkd3d-proton instalados en $WINEPREFIX. Para volver al Direct3D de Wine: ink-wine builtin." || echo "winetricks falló (rc=$rc): revisa la salida de arriba." >&2
+    exit $rc ;;
+  builtin)
+    prefix_ok
+    for d in d3d8 d3d9 d3d10core d3d11 d3d12 d3d12core dxgi; do
+      # winetricks guarda los overrides con '*' delante (*d3d9): quitar solo «d3d9» no hacía nada.
+      wine reg delete 'HKCU\Software\Wine\DllOverrides' /v "$d" /f >/dev/null 2>&1
+      wine reg delete 'HKCU\Software\Wine\DllOverrides' /v "*$d" /f >/dev/null 2>&1
+    done
+    wineserver -w
+    echo "Overrides de Direct3D quitados de $WINEPREFIX: vuelve a usar el Direct3D de Wine."
+    exit 0 ;;
+  tricks) shift; prefix_ok; exec winetricks "$@" ;;
+  new)
+    n=${2:-}
+    case $n in ''|.*|*[!A-Za-z0-9._-]*) echo "Uso: ink-wine new NOMBRE   (letras, números, punto, guion y guion bajo)" >&2; exit 1 ;; esac
+    d="${XDG_DATA_HOME:-$HOME/.local/share}/ink-wine/$n"
+    [ -e "$d" ] && { echo "Ya existe: $d" >&2; exit 1; }
+    mkdir -p "$d" || exit 1
+    export WINEPREFIX=$d
+    echo "Creando el prefijo $d (puede tardar un minuto)…"
+    wineboot -u >/dev/null 2>&1; wineserver -w
+    [ -f "$d/system.reg" ] || { echo "ERROR: no se creó el prefijo." >&2; exit 1; }
+    disable_menu_builder
+    apply_tweaks
+    echo "Listo. Úsalo con:  INK_WINEPREFIX=\"$d\" ink-wine programa.exe"
+    exit 0 ;;
+  tweaks)
+    prefix_ok; disable_menu_builder; apply_tweaks
+    echo "Ajustes aplicados a $WINEPREFIX (sin diálogo de fallos de winedbg, fuentes ClearType, sin winemenubuilder)."
+    exit 0 ;;
+  dpi)
+    prefix_ok
+    n=${2:-}
+    case $n in ''|*[!0-9]*) echo "Uso: ink-wine dpi N   (96 normal · 120 · 144 · 192)" >&2; exit 1 ;; esac
+    { [ "$n" -ge 72 ] && [ "$n" -le 480 ]; } || { echo "N debe estar entre 72 y 480." >&2; exit 1; }
+    wine reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$n" /f >/dev/null 2>&1
+    wine reg add 'HKLM\System\CurrentControlSet\Hardware Profiles\Current\Software\Fonts' /v LogPixels /t REG_DWORD /d "$n" /f >/dev/null 2>&1
+    wineserver -w
+    echo "DPI de $WINEPREFIX: $n (reinicia los programas abiertos de Wine: ink-wine kill)."
+    exit 0 ;;
+  grab)
+    prefix_ok
+    case ${2:-} in
+      on)  wine reg add 'HKCU\Software\Wine\X11 Driver' /v GrabFullscreen /t REG_SZ /d Y /f >/dev/null 2>&1 ;;
+      off) wine reg delete 'HKCU\Software\Wine\X11 Driver' /v GrabFullscreen /f >/dev/null 2>&1 ;;
+      *)   echo "Uso: ink-wine grab on|off" >&2; exit 1 ;;
+    esac
+    wineserver -w
+    echo "Captura del ratón en pantalla completa: ${2} (en $WINEPREFIX)."
+    exit 0 ;;
+  desktop)
+    prefix_ok
+    v=${2:-}
+    if [ "$v" = off ]; then
+      wine reg delete 'HKCU\Software\Wine\Explorer' /v Desktop /f >/dev/null 2>&1
+      wineserver -w; echo "Escritorio virtual desactivado en $WINEPREFIX."; exit 0
+    fi
+    [[ $v =~ ^[0-9]{3,5}x[0-9]{3,5}$ ]] || { echo "Uso: ink-wine desktop 1920x1080   (o: ink-wine desktop off)" >&2; exit 1; }
+    wine reg add 'HKCU\Software\Wine\Explorer\Desktops' /v Default /t REG_SZ /d "$v" /f >/dev/null 2>&1
+    wine reg add 'HKCU\Software\Wine\Explorer' /v Desktop /t REG_SZ /d Default /f >/dev/null 2>&1
+    wineserver -w
+    echo "Escritorio virtual de $v en $WINEPREFIX (para quitarlo: ink-wine desktop off)."
+    exit 0 ;;
+  dark|light)
+    prefix_ok
+    if [ "$1" = dark ]; then
+      pal='ActiveBorder=58 58 58;AppWorkSpace=16 16 16;Background=0 0 0;ButtonDkShadow=0 0 0;ButtonFace=32 32 32;ButtonHilight=60 60 60;ButtonLight=48 48 48;ButtonShadow=20 20 20;ButtonText=228 228 228;GrayText=110 110 110;Hilight=230 230 230;HilightText=16 16 16;InactiveBorder=31 31 31;InfoText=228 228 228;InfoWindow=32 32 32;Menu=24 24 24;MenuBar=24 24 24;MenuHilight=230 230 230;MenuText=228 228 228;Scrollbar=40 40 40;Window=21 21 21;WindowFrame=58 58 58;WindowText=228 228 228'
+    else
+      pal='ActiveBorder=180 180 180;AppWorkSpace=171 171 171;Background=0 0 0;ButtonDkShadow=105 105 105;ButtonFace=240 240 240;ButtonHilight=255 255 255;ButtonLight=227 227 227;ButtonShadow=160 160 160;ButtonText=0 0 0;GrayText=109 109 109;Hilight=0 120 215;HilightText=255 255 255;InactiveBorder=244 247 252;InfoText=0 0 0;InfoWindow=255 255 225;Menu=240 240 240;MenuBar=240 240 240;MenuHilight=51 153 255;MenuText=0 0 0;Scrollbar=200 200 200;Window=255 255 255;WindowFrame=100 100 100;WindowText=0 0 0'
+    fi
+    IFS=';' read -r -a pairs <<< "$pal"
+    for kv in "${pairs[@]}"; do
+      wine reg add 'HKCU\Control Panel\Colors' /v "${kv%%=*}" /t REG_SZ /d "${kv#*=}" /f >/dev/null 2>&1
+    done
+    wineserver -w
+    echo "Paleta $1 aplicada a $WINEPREFIX. Reinicia los programas abiertos (ink-wine kill). Si alguno queda ilegible: ink-wine light."
+    exit 0 ;;
+  info)
+    echo "Wine:       $(wine --version)"
+    echo "winetricks: $(winetricks --version 2>/dev/null | head -n1)"
+    echo "Prefijo:    $WINEPREFIX $([ -f "$WINEPREFIX/system.reg" ] && echo "($(sed -n 's/^#arch=//p' "$WINEPREFIX/system.reg" | head -n1))" || echo "(no existe)")"
+    [ -e /dev/ntsync ] && echo "ntsync:     activo" || echo "ntsync:     no disponible (usa esync/fsync)"
+    if ls /usr/share/vulkan/icd.d/*.json >/dev/null 2>&1; then echo "Vulkan:     $(ls /usr/share/vulkan/icd.d/ | sed 's/_icd.*//;s/\.json//' | tr '\n' ' ')"; else echo "Vulkan:     sin ICD (DXVK no funcionará)"; fi
+    if [ -f "$WINEPREFIX/user.reg" ]; then
+        ov=$(sed -n '/^\[Software\\\\Wine\\\\DllOverrides\]/,/^$/p' "$WINEPREFIX/user.reg" | grep -E '"\*?(d3d|dxgi)' | sed 's/^"\([^"]*\)"="\([^"]*\)".*/\1=\2/' | tr '\n' ' ')
+        echo "Overrides D3D: ${ov:-ninguno (Direct3D de Wine)}"
+    fi
+    [ -f "$WINEPREFIX/system.reg" ] && { echo "Verbos:     $(winetricks list-installed 2>/dev/null | grep -E '^[a-z0-9_=]+$' | tr '\n' ' ')"; }
+    exit 0 ;;
+  pad)
+    prefix_ok
+    fixed=0
+    if [ "${INK_WINE_NATIVE_INPUT:-0}" != 1 ]; then
+      for d in dinput dinput8 xinput1_1 xinput1_2 xinput1_3 xinput1_4 xinput9_1_0 xact xact_x64; do
+        # winetricks escribe *dinput8 (con asterisco): hay que quitar las dos formas.
+        for v in "$d" "*$d"; do
+          if wine reg query 'HKCU\Software\Wine\DllOverrides' /v "$v" >/dev/null 2>&1; then
+            wine reg delete 'HKCU\Software\Wine\DllOverrides' /v "$v" /f >/dev/null 2>&1 && fixed=$((fixed+1))
+          fi
+        done
+      done
+      wineserver -w
+      [ "$fixed" -gt 0 ] && echo "Reparados $fixed overrides de entrada: Wine usará dinput8/xinput integrados."
+    fi
+    echo "Mandos conectados:"
+    found=0
+    for d in /sys/class/input/event*; do
+      [ -r "$d/device/capabilities/key" ] || continue
+      read -r -a w < "$d/device/capabilities/key" || continue
+      n=${#w[@]}
+      for bit in 304 288; do   # BTN_GAMEPAD / BTN_JOYSTICK (evdev)
+        i=$((bit / 64)); b=$((bit % 64)); idx=$((n - 1 - i))
+        [ "$idx" -ge 0 ] || continue
+        if (( (0x${w[$idx]} >> b) & 1 )); then
+          ev=/dev/input/${d##*/}
+          name=$(<"$d/device/name")
+          if [ -r "$ev" ]; then printf '  ✔ %s (%s)\n' "$name" "$ev"
+          else printf '  ! %s (%s sin permiso de lectura)\n' "$name" "$ev"; fi
+          found=1; break
+        fi
+      done
+    done
+    [ "$found" = 0 ] && echo "  (ninguno: conecta el mando y vuelve a intentarlo)"
+    if [ "${2:-}" = check ]; then
+      echo "Para verificarlo en Wine: WINEPREFIX=\"$WINEPREFIX\" wine control joy.cpl"
+      exit 0
+    fi
+    echo "Abriendo el Panel de control → Mandos (joy.cpl)…"
+    exec wine control joy.cpl ;;
+esac
+
+prefix_ok
+f=$1; shift
+[ -e "$f" ] || { echo "No existe: $f" >&2; exit 1; }
+f=$(readlink -f -- "$f")
+cd "$(dirname "$f")" || exit 1   # muchos juegos buscan sus datos en la carpeta de trabajo
+run=()
+if [ "${INK_GAMESCOPE:-0}" = 1 ]; then
+  if command -v gamescope >/dev/null 2>&1; then
+    read -r -a gsargs <<< "${INK_GAMESCOPE_ARGS:--f}"
+    run=(gamescope "${gsargs[@]}" --)
+  else echo "gamescope no está instalado: se ejecuta sin él (./6-wine.sh lo instala)." >&2; fi
+fi
+[ "${INK_GAMEMODE:-0}" = 1 ] && command -v gamemoderun >/dev/null 2>&1 && run=(gamemoderun "${run[@]}")
+vd=${INK_WINE_DESKTOP:-}
+if [ -n "$vd" ] && ! [[ $vd =~ ^[0-9]{3,5}x[0-9]{3,5}$ ]]; then echo "INK_WINE_DESKTOP debe ser como 1920x1080: se ignora." >&2; vd=""; fi
+case "${f,,}" in
+  *.msi)          exec "${run[@]}" wine msiexec /i "$f" "$@" ;;
+  *.bat|*.cmd)    exec "${run[@]}" wine cmd /c "$f" "$@" ;;
+  *.lnk)          exec "${run[@]}" wine start /unix "$f" "$@" ;;
+  *)  if [ -n "$vd" ]; then exec "${run[@]}" wine explorer "/desktop=ink,$vd" "${f##*/}" "$@"   # ya estamos en su carpeta
+      else exec "${run[@]}" wine "$f" "$@"; fi ;;
+esac

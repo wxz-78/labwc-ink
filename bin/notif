@@ -1,0 +1,18 @@
+#!/bin/sh
+# notif — historial de notificaciones de mako en fuzzel. Uso: notif [history|restore|clear]
+case "$1" in
+    restore) exec makoctl restore ;;
+    clear)   exec makoctl dismiss --all ;;
+    history|"") ;;
+    *) echo "uso: notif history|restore|clear" >&2; exit 1 ;;
+esac
+pkill -x fuzzel && exit 0
+# makoctl history: «Notification N: resumen» seguido de «  App name: …»
+hist=$(makoctl history 2>/dev/null | awk '
+    /^Notification [0-9]+: / { if (s != "") print a "\t" s; s = $0; sub(/^Notification [0-9]+: /, "", s); a = "" }
+    /^  App name: /          { a = $0; sub(/^  App name: /, "", a) }
+    END                      { if (s != "") print a "\t" s }')
+sel=$({ printf '%s\n' "󰁯  Restaurar la última" "󰎟  Descartar las activas"
+        [ -n "$hist" ] && printf '%s\n' "$hist" | awk -F'\t' '{ printf "%-14s %s\n", substr($1, 1, 14), $2 }' | head -n 30
+      } | fuzzel --dmenu --index --lines 10 --width 50 --prompt "󰂚  ")
+case $sel in 0) makoctl restore ;; 1) makoctl dismiss --all ;; esac

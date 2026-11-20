@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# ink-clean — limpieza de mantenimiento: paquetes huérfanos, cachés, registros viejos y miniaturas.
+# Uso: ink-clean [--dry-run] [--yes] [--trash]
+#   --dry-run  muestra qué limpiaría, sin tocar nada
+#   --yes      no pregunta: aplica todos los pasos (menos la papelera)
+#   --trash    incluye vaciar la papelera (nunca se vacía sin pedirlo)
+# Si no se lanza desde una terminal, se abre solo en foot (salvo con --yes).
+# Variables: INK_CLEAN_NO_FOOT=1 evita abrir foot; INK_CLEAN_KEEP="pkg1 pkg2" protege paquetes extra.
+# No toca tus documentos, descargas ni configuración. Se puede ejecutar cuando quieras.
+set -uo pipefail
+[ -r /usr/local/lib/ink/common.sh ] && . /usr/local/lib/ink/common.sh
+
+# Colores solo cuando la salida va a una terminal.
+if [ -t 1 ] && [ -z "${NO_COLOR+x}" ]; then
+    C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_BOLD=$'\033[1m'; C_OFF=$'\033[0m'
+else
+    C_OK=; C_WARN=; C_BOLD=; C_OFF=
+fi
+
+DRY=0; YES=0; TRASH=0
+for a in "$@"; do
+    case "$a" in
+        --dry-run) DRY=1 ;;
+        --yes|-y)  YES=1 ;;
+        --trash)   TRASH=1 ;;
+        -h|--help) sed -n '2,/^set /{/^set /!p}' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "uso: ink-clean [--dry-run] [--yes] [--trash]" >&2; exit 1 ;;
+    esac
+done
+
+# ¿La salida va a una terminal de verdad? labwc lanza sus hijos con stdin/stdout/stderr
+# en /dev/tty1, así que «[ -t 1 ]» también es cierto cuando no hay nadie mirando.
+on_terminal() {
+    [ -t 0 ] && [ -t 1 ] || return 1
+    [ "${TERM:-dumb}" != dumb ] || return 1
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        case $(readlink -f "/proc/$$/fd/1" 2>/dev/null) in
+            /dev/tty[0-9]*) return 1 ;;
+        esac
+    fi
+    return 0
+}
+
+# Si no hay terminal, reabrir en foot solo para ejecuciones interactivas.
+# Así `ink-clean --yes` desde cron no intenta abrir una ventana.
+if (( YES == 0 )) && ! on_terminal && [ -z "${INK_CLEAN_NO_FOOT:-}" ] \
+   && [ -n "${WAYLAND_DISPLAY:-}" ] && command -v foot >/dev/null 2>&1; then
+    export INK_CLEAN_NO_FOOT=1
+    exec foot -T "Limpieza del sistema" -e bash -c \
+        '"$0" "$@"; rc=$?; printf "\nEnter para cerrar… "; read -r _; exit $rc' "$0" "$@"
+fi
+
+ok()   { printf '%s✔%s %s\n' "$C_OK" "$C_OFF" "$*"; }
+warn() { printf '%s!%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
+human() { LC_ALL=C numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "${1} B"; }
+dirsize() {   # suma en bytes de las rutas que existan
+    local t=0 s p
+    for p in "$@"; do
+        [ -e "$p" ] || continue
+        s=$(du -sb -- "$p" 2>/dev/null | cut -f1)
+        t=$((t + ${s:-0}))
+    done
+    echo "$t"
+}
+avail() { df --output=avail -B1 / 2>/dev/null | awk 'NR==2 { gsub(/[^0-9]/, "", $1); print $1 }'; }
+
+if (( EUID == 0 )); then
+    echo "No lo ejecutes como root; pedirá sudo cuando haga falta." >&2
+    exit 1
+fi
+: "${HOME:?No se pudo determinar el directorio personal (HOME).}"
+command -v pacman >/dev/null || { echo "Este script es para Arch Linux (pacman)." >&2; exit 1; }
+for c in find du df numfmt; do
+    command -v "$c" >/dev/null 2>&1 || { echo "Falta el comando '$c'." >&2; exit 1; }
+done
+if (( ! DRY )); then
+    command -v sudo >/dev/null 2>&1 || { echo "Falta sudo." >&2; exit 1; }
+fi
+if (( DRY == 0 && YES == 0 )) && ! on_terminal; then
+    echo "No hay terminal interactiva: usa --yes para aplicar sin preguntar o --dry-run para simular." >&2
+    exit 1
+fi
+
+# run_step "título" "detalle" función [s|n]  — el último es la respuesta por defecto (n = pide confirmación expresa)
+FAILED=0
+trap 'printf "\nInterrumpido.\n" >&2; exit 130' INT
+run_step() {
+    local title=$1 detail=$2 fn=$3 def=${4:-s} r hint
+    printf '\n%s%s%s' "$C_BOLD" "$title" "$C_OFF"
+    [ -n "$detail" ] && printf ' — %s' "$detail"
+    printf '\n'
+    if (( DRY )); then echo "   (simulación: no se toca nada)"; return 0; fi
+    if (( YES )); then
+        if [ "$def" != s ]; then
+            echo "   omitido (requiere confirmación expresa)"
+            return 0
+        fi
+    else
+        hint="[S/n]"; [ "$def" = n ] && hint="[s/N]"
+        if ! read -rp "   ¿Limpiar? $hint " r; then
+            printf '\n'; echo "Cancelado." >&2
+            exit 130
+        fi
+        r=${r:-$def}
+        [[ $r =~ ^[sSyY]$ ]] || { echo "   omitido"; return 0; }
+    fi
+    if "$fn"; then
+        ok "Hecho."
+    else
+        warn "No se pudo completar este paso."
+        FAILED=1
+    fi
+}
+
+(( DRY )) || sudo -v || { echo "Hace falta sudo." >&2; exit 1; }
+before=$(avail); before=${before:-0}
+
+if [ -e /var/lib/pacman/db.lck ]; then
+    warn "Pacman parece estar en uso (/var/lib/pacman/db.lck); los pasos de paquetes pueden fallar."
+fi
+
+# 1. Paquetes huérfanos (instalados como dependencia que ya nadie usa)
+# Intocables (lista compartida en common.sh: cups, yt-dlp, wine, lib32-*…); sin common.sh, solo los fijos
+if command -v keep_pkgs >/dev/null 2>&1; then mapfile -t KEEP < <(keep_pkgs); else KEEP=(cups libcups noto-fonts-cjk yt-dlp); fi
+# Protege paquetes extra sin editar el script: INK_CLEAN_KEEP="foo bar"
+if [ -n "${INK_CLEAN_KEEP:-}" ]; then
+    read -r -a extra_keep <<< "$INK_CLEAN_KEEP"
+    KEEP+=("${extra_keep[@]}")
+fi
+declare -A keep_map=()
+for p in "${KEEP[@]}"; do keep_map["$p"]=1; done
+orph=()
+while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [[ -n ${keep_map[$p]:-} ]]; then (( DRY )) || sudo pacman -D --asexplicit "$p" >/dev/null 2>&1   # protegido: deja de contar como huérfano
+    else orph+=("$p"); fi
+done < <(pacman -Qdtq 2>/dev/null || true)
+do_orphans() { sudo pacman -Rns --noconfirm "${orph[@]}"; }
+if (( ${#orph[@]} )); then run_step "Paquetes huérfanos" "${orph[*]}" do_orphans
+else ok "Sin paquetes huérfanos."; fi
+
+# 2. Caché de pacman: conserva las 2 últimas versiones de lo instalado y borra lo desinstalado
+do_pacman_cache() { sudo paccache -rk2 && sudo paccache -ruk0; }
+if command -v paccache >/dev/null; then
+    sz=$(dirsize /var/cache/pacman/pkg)
+    if (( sz > 0 )); then run_step "Caché de pacman" "ocupa $(human "$sz"); se conservan 2 versiones de cada paquete" do_pacman_cache
+    else ok "Caché de pacman vacía."; fi
+else
+    warn "Falta paccache (paquete pacman-contrib): no se limpia la caché de pacman."
+fi
+
+# 3. Restos de compilación del AUR (paru/yay vuelven a descargarlos si hacen falta)
+aur=("$HOME/.cache/paru/clone" "$HOME/.cache/yay")
+do_aur() {
+    local d rc=0
+    for d in "${aur[@]}"; do
+        [ -d "$d" ] || continue
+        find "$d" -mindepth 1 -delete || rc=1
+    done
+    return $rc
+}
+sz=$(dirsize "${aur[@]}")
+if (( sz > 0 )); then run_step "Caché del AUR" "ocupa $(human "$sz")" do_aur
+else ok "Caché del AUR vacía."; fi
+
+# 4. Registros del sistema (journal): deja las últimas 2 semanas, con un máximo de 200 MB
+do_journal() { sudo journalctl --vacuum-time=2weeks --vacuum-size=200M >/dev/null; }
+if command -v journalctl >/dev/null 2>&1; then
+    js=$(LC_ALL=C journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMGT]' | head -1)
+    if [ -n "${js:-}" ]; then run_step "Registros del sistema" "ocupan $js; se conservan 2 semanas" do_journal
+    else ok "Sin registros que limpiar."; fi
+else
+    warn "Falta journalctl (systemd): no se limpian los registros."
+fi
+
+# 5. Informes de cierres inesperados (coredumps)
+do_cores() { sudo find /var/lib/systemd/coredump -type f -delete; }
+# (el directorio solo lo lee root: sin sudo la comprobación siempre saldría vacía; en --dry-run se usa sudo -n y, si no hay permiso, se omite)
+if [ -n "$(sudo -n find /var/lib/systemd/coredump -type f -print -quit 2>/dev/null)" ]; then
+    run_step "Informes de cierres inesperados" "" do_cores
+else ok "Sin informes de cierres inesperados."; fi
+
+# 6. Cachés de usuario: miniaturas, fondos reducidos y pip (se regeneran solas)
+ucache=("$HOME/.cache/thumbnails" "$HOME/.cache/ink" "$HOME/.cache/pip")
+do_ucache() {
+    local d rc=0
+    for d in "${ucache[@]}"; do
+        [ -d "$d" ] || continue
+        find "$d" -mindepth 1 -delete || rc=1
+    done
+    return $rc
+}
+sz=$(dirsize "${ucache[@]}")
+if (( sz > 0 )); then run_step "Miniaturas y cachés de usuario" "ocupan $(human "$sz")" do_ucache
+else ok "Cachés de usuario vacías."; fi
+
+# 7. Papelera (solo con --trash, o si lo confirmas expresamente)
+trash="$HOME/.local/share/Trash"
+do_trash() {
+    local d rc=0
+    for d in "$trash/files" "$trash/info"; do
+        [ -d "$d" ] || continue
+        find "$d" -mindepth 1 -delete || rc=1
+    done
+    return $rc
+}
+sz=$(dirsize "$trash/files")
+if (( sz > 0 )); then
+    run_step "Papelera" "ocupa $(human "$sz"); se borra para siempre (usa --trash)" do_trash "$([ "$TRASH" = 1 ] && echo s || echo n)"
+else ok "Papelera vacía."; fi
+
+# 8. Aviso: archivos .pacnew (configuraciones nuevas de paquetes; revísalos a mano, no se borran)
+mapfile -d '' -t pacnew < <(find /etc -name '*.pacnew' -print0 2>/dev/null)
+if (( ${#pacnew[@]} )); then
+    echo; warn "Hay archivos .pacnew pendientes de revisar (no se tocan):"
+    printf '   %s\n' "${pacnew[@]}"
+fi
+
+if (( ! DRY )); then
+    after=$(avail); after=${after:-0}
+    freed=$((after - before)); (( freed < 0 )) && freed=0
+    printf '\n%sEspacio liberado: %s%s\n' "$C_BOLD" "$(human "$freed")" "$C_OFF"
+fi
+if (( FAILED )); then
+    printf '\n'; warn "Algunos pasos no se completaron; revisa los mensajes de arriba."
+    exit 1
+fi

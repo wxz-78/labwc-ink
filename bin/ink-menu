@@ -1,0 +1,72 @@
+#!/bin/sh
+# ink-menu — centro de control con fuzzel: fondo, capturas, grabación, audio, Wi-Fi, luz nocturna, sistema…
+# Cada entrada lleva su propio comando («etiqueta|comando»): para añadir o mover una, basta una línea en la lista
+# (antes dependía de números de posición que había que renumerar a mano).
+pkill -x fuzzel && exit 0
+
+# menu ENTRADA… → muestra las etiquetas y ejecuta el comando de la elegida (Esc: no hace nada).
+# Los comandos son literales de este archivo (nunca texto del usuario), por eso se pueden evaluar.
+menu() {
+    sel=$(for e in "$@"; do printf '%s\n' "${e%%|*}"; done |
+          fuzzel --dmenu --index --lines "$#" --width 34 --prompt "󰍉  ") || return 0
+    [ -n "$sel" ] || return 0
+    i=0
+    for e in "$@"; do
+        [ "$i" = "$sel" ] && { eval "${e#*|}"; return; }
+        i=$((i + 1))
+    done
+}
+
+# Estado real en las etiquetas: el menú dice qué pasaría al pulsar en vez de obligar a recordarlo.
+running() { pgrep -x "$1" >/dev/null 2>&1; }
+dnd_on()  { command -v makoctl >/dev/null 2>&1 && makoctl mode 2>/dev/null | grep -q dnd; }
+if running wf-recorder; then rec_entry="󰻃  Detener grabación|exec rec stop"; else rec_entry="󰑋  Grabar pantalla|rec_menu"; fi
+if running wlsunset;    then night="󰖔  Luz nocturna  (activa)"; else night="󰖔  Luz nocturna"; fi
+if dnd_on;              then dnd="󰂛  No molestar  (activado)";  else dnd="󰂛  No molestar"; fi
+
+wallpaper_menu() {
+    menu "󰋩  Elegir fondo|exec wallpaper pick" \
+         "󰒝  Aleatorio|exec wallpaper random" \
+         "󰒭  Siguiente|exec wallpaper next" \
+         "󰔛  Rotación automática|exec wallpaper auto" \
+         "󰹑  Ajuste de imagen|exec wallpaper mode"
+}
+shot_menu() {
+    menu "󰍹  Pantalla completa|sleep 0.3; exec shot full" \
+         "󰆟  Área|exec shot area" \
+         "󰅌  Área al portapapeles|exec shot clip" \
+         "󰏫  Área y anotar|exec shot edit"
+}
+rec_menu() {
+    menu "󰍹  Pantalla completa|exec rec full" \
+         "󰆟  Un área|exec rec area"
+}
+clip_menu() {
+    menu "󰅌  Ver historial|exec clip" \
+         "󰆴  Borrar historial|clip_wipe"
+}
+clip_wipe() { cliphist wipe && notify-send -u low -t 2000 "󰆴  Portapapeles" "Historial borrado"; }
+bluetooth() {
+    if command -v bluetui >/dev/null 2>&1; then exec foot -T Bluetooth -e bluetui
+    else notify-send -u low "󰂯  Bluetooth" "No hay controlador o falta bluetui"; fi
+}
+
+menu "󰸉  Fondo de pantalla|wallpaper_menu" \
+     "󰄀  Captura|shot_menu" \
+     "$rec_entry" \
+     "󰅌  Portapapeles|clip_menu" \
+     "󰂚  Notificaciones|exec notif" \
+     "󰖩  Wi-Fi|exec wifi-menu" \
+     "󰂯  Bluetooth|bluetooth" \
+     "󰓃  Salida de audio|exec audio-switch sink" \
+     "󰍬  Entrada de audio|exec audio-switch source" \
+     "$night|exec nightlight menu" \
+     "$dnd|exec dnd toggle" \
+     "󰍹  Pantallas|exec monitors" \
+     "󰏘  Color de acento|exec ink-theme menu" \
+     "󰚰  Actualizar sistema|exec ink-update run" \
+     "󰃢  Limpiar sistema|exec ink-clean" \
+     "󰋽  Estado del sistema|exec ink-doctor" \
+     "󰍛  Hardware y arranque|exec ink-hw" \
+     "󰌌  Atajos|exec keys" \
+     "󰐥  Sesión|exec power-menu"

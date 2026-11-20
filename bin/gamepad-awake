@@ -1,0 +1,74 @@
+#!/bin/bash
+# gamepad-awake — evita que la pantalla se bloquee, se apague o se suspenda mientras juegas con un mando. Lo lanza labwc/autostart.
+# Por qué hace falta: swayidle solo cuenta teclado y ratón; los mandos no. Jugando solo con el mando, a los 5 min se bloqueaba.
+# Cómo: lee los mandos (/dev/input/js*, módulo joydev) y, mientras haya actividad, simula un movimiento mínimo de 1 px del
+# puntero (wlrctl) cada 30 s. Eso reinicia los tres temporizadores de swayidle (bloqueo, pantalla apagada y suspensión).
+# Reglas: el drift de los sticks (<~37 %) se ignora; con la pantalla ya bloqueada no hace nada (un mando no desbloquea);
+# si el mando queda quieto, el reposo vuelve a ser el normal. Sin mando conectado casi no consume (mira /dev/input cada 5 s).
+# Necesita: wlrctl y permiso de lectura sobre el mando (reglas udev: game-devices-udev, ver 6-wine.sh).
+# Prueba: gamepad-awake --debug   (muestra cada actividad detectada y cada pulso)
+INTERVAL=30      # segundos mínimos entre pulsos (el reposo más corto es de 300 s)
+DEADZONE=12000   # de 32767: movimientos de sticks por debajo de esto no cuentan como actividad
+DEBUG=0
+PADS=${INK_PADS:-/dev/input/js*}   # solo se cambia para pruebas
+case "${1:-}" in
+  -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  --debug)   DEBUG=1 ;;
+esac
+dbg() { [ "$DEBUG" = 1 ] && printf '[%s] %s\n' "$(date +%T)" "$*" >&2; return 0; }
+
+command -v wlrctl >/dev/null 2>&1 || { echo "gamepad-awake: falta wlrctl (sudo pacman -S wlrctl)" >&2; exit 1; }
+[ -n "${WAYLAND_DISPLAY:-}" ] || { echo "gamepad-awake: hay que ejecutarlo dentro de la sesión de labwc" >&2; exit 1; }
+
+# Una sola instancia por sesión
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/ink-gamepad-awake-$(id -u).lock"
+flock -n 9 || exit 0
+MAIN=$$
+
+# read_pad DISPOSITIVO → imprime una línea por cada actividad real del mando.
+# Formato del kernel (struct js_event, 8 bytes): tiempo(4) · valor(2, con signo) · tipo(1) · número(1).
+# tipo 1 = botón, 2 = eje; el bit 0x80 marca los eventos iniciales (estado al conectar): no son actividad.
+# Se analiza solo con bash (sin awk: mawk acumula la entrada y entregaría los eventos con retraso).
+read_pad() {
+  local lo hi t v
+  while read -r _ _ _ _ lo hi t _; do
+    (( t >= 128 )) && continue
+    v=$(( lo + 256 * hi )); (( v >= 32768 )) && v=$(( v - 65536 ))
+    if (( t == 1 || (t == 2 && (v >= DEADZONE || v <= -DEADZONE)) )); then echo 1; fi
+  done < <(stdbuf -oL od -An -v -tu1 -w8 "$1" 2>/dev/null)
+}
+
+# Vigila los mandos conectados (también los que se conectan después) y junta su actividad en la salida estándar
+supervisor() {
+  local -A pid=()
+  local d
+  # shellcheck disable=SC2046  # jobs -p devuelve PIDs separados por saltos de línea: aquí se quiere esa división
+  trap 'kill $(jobs -p) 2>/dev/null' EXIT
+  while :; do
+    kill -0 "$MAIN" 2>/dev/null || exit 0   # si el proceso principal murió, no quedan lectores huérfanos
+    for d in $PADS; do
+      [ -e "$d" ] || continue
+      if [ -z "${pid[$d]:-}" ] || ! kill -0 "${pid[$d]}" 2>/dev/null; then
+        read_pad "$d" 9>&- & pid[$d]=$!
+        dbg "mando detectado: $d"
+      fi
+    done
+    sleep 5
+  done
+}
+
+poke() {
+  pgrep -x swaylock >/dev/null && { dbg "pantalla bloqueada: no hago nada"; return 0; }
+  dbg "pulso (reinicia el reposo)"
+  # 1 px a la derecha y 1 px de vuelta: el puntero queda donde estaba (si el 2.º falla, se reintenta con «--» para el valor negativo)
+  wlrctl pointer move 1 0 2>/dev/null || return 0
+  wlrctl pointer move -1 0 2>/dev/null || wlrctl pointer move -- -1 0 2>/dev/null
+  return 0
+}
+
+last=0
+while read -r _; do
+  printf -v now '%(%s)T' -1
+  dbg "actividad del mando"
+  if [ $((now - last)) -ge "$INTERVAL" ]; then last=$now; poke; fi
+done < <(supervisor 9>&-)
