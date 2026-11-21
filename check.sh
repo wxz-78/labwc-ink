@@ -479,7 +479,7 @@ grep -q 'logind.conf.d' 2-optimize.sh || { bad "2-optimize.sh: falta la configur
 grep -q 'pacman -Rns --print' 4-cleanup.sh && { bad "4-cleanup.sh: «pacman -Rns --print» es inválido (--nosave con --print): la simulación no funciona"; guard_bad=1; }
 grep -q 'pgrep -x gamepad-awake' bin/ink-doctor || { bad "ink-doctor: el pgrep de gamepad-awake no coincide con el autostart"; guard_bad=1; }
 grep -q 'SSH_CONNECTION' bin/idle-suspend && grep -q 'grep -vE' bin/idle-suspend || { bad "idle-suspend: el display local (:0) cuenta como sesión remota y nunca suspende"; guard_bad=1; }
-grep -q 'font-feature-settings: "tnum" 1, "lnum" 1;' .config/waybar/style.css || { bad "waybar: font-feature-settings mal escrita (las cifras del reloj bailan)"; guard_bad=1; }
+grep -q 'font-feature-settings: "tnum 1, lnum 1";' .config/waybar/style.css || { bad "waybar: font-feature-settings mal escrita (GTK 3 exige una sola cadena; las cifras del reloj bailan)"; guard_bad=1; }
 [ "$guard_bad" = 0 ] && ok "guardias de regresión (TLP, MAC, firewall+SSH, fwupd, logind)"
 
 # --- instalación real en un HOME temporal: copia todo, conserva permisos y es idempotente ---
