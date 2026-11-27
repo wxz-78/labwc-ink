@@ -1,0 +1,107 @@
+#!/bin/sh
+# ink-menu — centro de control con fuzzel, agrupado en submenús (8 entradas en vez de 19).
+# Cada entrada lleva su propio comando («etiqueta|comando»): para añadir o mover una, basta una línea en la lista.
+# Un ● junto a una entrada del menú principal avisa de que hay algo activo dentro (grabando, no molestar, luz nocturna).
+pkill -x fuzzel && exit 0
+
+# menu ENTRADA… → muestra las etiquetas y ejecuta el comando de la elegida (Esc: no hace nada).
+# Los comandos son literales de este archivo (nunca texto del usuario), por eso se pueden evaluar.
+menu() {
+    sel=$(for e in "$@"; do printf '%s\n' "${e%%|*}"; done |
+          ink-fuzzel --dmenu --index --lines "$#" --width 34 --prompt "󰍉  ") || return 0
+    [ -n "$sel" ] || return 0
+    i=0
+    for e in "$@"; do
+        [ "$i" = "$sel" ] && { eval "${e#*|}"; return; }
+        i=$((i + 1))
+    done
+}
+
+running() { pgrep -x "$1" >/dev/null 2>&1; }
+dnd_on()  { command -v makoctl >/dev/null 2>&1 && makoctl mode 2>/dev/null | grep -q dnd; }
+back="󰁍  Volver|main_menu"
+
+wallpaper_menu() {
+    menu "󰋩  Elegir fondo|exec wallpaper pick" \
+         "󰒝  Aleatorio|exec wallpaper random" \
+         "󰒭  Siguiente|exec wallpaper next" \
+         "󰔛  Rotación automática|exec wallpaper auto" \
+         "󰹑  Ajuste de imagen|exec wallpaper mode" \
+         "$back"
+}
+
+capture_menu() {
+    if running wf-recorder; then rec="󰻃  Detener grabación|exec rec stop"; else rec="󰑋  Grabar pantalla|exec rec full"; fi
+    menu "󰍹  Captura completa|sleep 0.3; exec shot full" \
+         "󰆟  Captura de un área|exec shot area" \
+         "󰅌  Área al portapapeles|exec shot clip" \
+         "󰏫  Área y anotar|exec shot edit" \
+         "$rec" \
+         "󰑋  Grabar un área|exec rec area" \
+         "$back"
+}
+
+clip_wipe() { cliphist wipe && notify-send -u low -t 2000 "󰆴  Portapapeles" "Historial borrado"; }
+clipboard_menu() {
+    if dnd_on; then dnd="󰂛  No molestar  (activado)"; else dnd="󰂛  No molestar"; fi
+    menu "󰅌  Historial del portapapeles|exec clip" \
+         "󰆴  Borrar el portapapeles|clip_wipe" \
+         "󰂚  Historial de notificaciones|exec notif" \
+         "$dnd|exec dnd toggle" \
+         "$back"
+}
+
+bluetooth() {
+    if command -v bluetui >/dev/null 2>&1; then
+        exec foot -T Bluetooth -e bluetui
+    fi
+    if ! command -v bluetoothctl >/dev/null 2>&1; then
+        notify-send -u normal "󰂯  Bluetooth" "bluez no está instalado. Ejecuta ./1-install.sh o instala bluez/bluetui."
+        return
+    fi
+    notify-send -u normal "󰂯  Bluetooth" "Falta bluetui. Instálalo con: paru -S bluetui (o tu ayudante AUR)."
+}
+network_menu() {
+    menu "󰖩  Wi-Fi|exec wifi-menu" \
+         "󰂯  Bluetooth|bluetooth" \
+         "󰓃  Salida de audio|exec audio-switch sink" \
+         "󰍬  Entrada de audio|exec audio-switch source" \
+         "$back"
+}
+
+screen_menu() {
+    if running wlsunset; then night="󰖔  Luz nocturna  (activa)"; else night="󰖔  Luz nocturna"; fi
+    # La etiqueta dice a qué tema se va a cambiar (Violeta es opcional; Ink sigue siendo el tema de fábrica)
+    if [ "$("$HOME/.local/bin/ink-theme" look status 2>/dev/null)" = Violeta ]; then next=Ink; else next=Violeta; fi
+    menu "󰍹  Pantallas|exec monitors" \
+         "$night|exec nightlight menu" \
+         "󰏘  Color de acento|exec ink-theme menu" \
+         "󰓃  Tema: $next|exec \"$HOME/.local/bin/ink-theme\" look" \
+         "$back"
+}
+
+system_menu() {
+    menu "󰚰  Actualizar sistema|exec ink-update run" \
+         "󰃢  Limpiar sistema|exec ink-clean" \
+         "󰋽  Estado del sistema|exec ink-doctor" \
+         "󰍛  Hardware y arranque|exec ink-hw" \
+         "$back"
+}
+
+main_menu() {
+    # ● = hay algo activo dentro de esa entrada: se ve de un vistazo sin abrirla
+    c_rec=""; c_clip=""; c_screen=""
+    running wf-recorder && c_rec="  ●"
+    dnd_on              && c_clip="  ●"
+    running wlsunset    && c_screen="  ●"
+    menu "󰸉  Fondo de pantalla|wallpaper_menu" \
+         "󰄀  Captura y grabación$c_rec|capture_menu" \
+         "󰅌  Portapapeles y avisos$c_clip|clipboard_menu" \
+         "󰖩  Red y audio|network_menu" \
+         "󰍹  Pantalla y color$c_screen|screen_menu" \
+         "󰒓  Sistema|system_menu" \
+         "󰌌  Atajos|exec keys" \
+         "󰐥  Sesión|exec power-menu"
+}
+
+main_menu

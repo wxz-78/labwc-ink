@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# ink-keyring — comprueba y, si hace falta, regenera el llavero «login» de gnome-keyring.
+# Uso: ink-keyring            estado del llavero (no cambia nada)
+#      ink-keyring reset      guarda una copia y lo borra; se recrea al volver a iniciar sesión
+# Cuándo hace falta: el log del arranque dice «gkr-pam: couldn't unlock the login keyring». Pasa si la clave del llavero
+# no es la de tu usuario (p. ej. cambiaste la contraseña con otra herramienta): PAM no puede abrirlo al entrar.
+# Al regenerarlo con la sesión limpia, el nuevo llavero se crea con la contraseña de tu usuario y se desbloquea solo.
+# Se pierde lo guardado en él (contraseñas y cookies cifradas del navegador): por eso se muestra cuántos secretos hay antes.
+KR_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/keyrings"
+cmd=${1:-status}
+
+locked() {
+  busctl --user get-property org.freedesktop.secrets /org/freedesktop/secrets/collection/login \
+    org.freedesktop.Secret.Collection Locked 2>/dev/null
+}
+count_items() {   # secretos guardados en el llavero login (solo se pueden contar si está desbloqueado)
+  command -v secret-tool >/dev/null 2>&1 || return 1
+  timeout 10 secret-tool search --all --unlock xdg:schema '' 2>/dev/null | grep -c '^\[' || true
+}
+
+case $cmd in
+  status)
+    case $(locked) in
+      *false*) echo "Llavero «login»: desbloqueado ✔" ;;
+      *true*)  echo "Llavero «login»: BLOQUEADO. Su clave no es la de tu usuario: ink-keyring reset" ;;
+      *)       echo "Llavero «login»: aún sin crear (se crea al abrir el navegador por primera vez)" ;;
+    esac
+    ls -1 "$KR_DIR" 2>/dev/null | sed 's/^/  · /'
+    ;;
+  reset)
+    [ -d "$KR_DIR" ] || { echo "No hay llavero que regenerar ($KR_DIR no existe)."; exit 0; }
+    n=$(count_items); [ -z "$n" ] && n="?"
+    echo "Secretos guardados que se perderán (si el llavero está bloqueado no se pueden contar): $n"
+    read -rp "Guardar copia y borrar el llavero «login»? [s/N] " r
+    [[ $r =~ ^[sSyY]$ ]] || { echo "Cancelado."; exit 0; }
+    stamp=$(date +%Y%m%d-%H%M%S)
+    for f in login.keyring user.keystore; do
+      [ -e "$KR_DIR/$f" ] && mv -v "$KR_DIR/$f" "$KR_DIR/$f.bak-$stamp"
+    done
+    echo "Hecho. Cierra la sesión y vuelve a entrar: PAM crea un llavero nuevo con tu contraseña."
+    echo "(Las copias .bak-* se pueden borrar cuando compruebes que todo va bien.)"
+    ;;
+  *) sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

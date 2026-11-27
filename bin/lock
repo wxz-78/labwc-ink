@@ -1,0 +1,12 @@
+#!/bin/sh
+# lock — bloquea la pantalla una sola vez (evita lanzar swaylock dos veces).
+# swayidle puede pedirlo a la vez desde varios temporizadores (y loginctl también): el flock
+# cierra la carrera entre «pgrep» y el lanzamiento, sin depender de quién llega primero.
+if command -v flock >/dev/null 2>&1; then
+    lockfile="${XDG_RUNTIME_DIR:-/tmp}/ink-lock-$(id -u).lock"
+    if : >"$lockfile" 2>/dev/null; then
+        exec 9>"$lockfile"
+        flock -n 9 || exit 0
+    fi
+fi
+pgrep -x swaylock >/dev/null || exec swaylock -f

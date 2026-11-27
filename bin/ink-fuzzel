@@ -1,0 +1,84 @@
+#!/bin/sh
+# ink-fuzzel — fuzzel que cabe en la pantalla (portátiles de 1366×768 o menos). Se usa igual que fuzzel:
+#   ink-fuzzel --dmenu --lines 23 --width 56 …
+#   · limita --lines y --width a lo que cabe sin tapar la barra ni salirse de la pantalla;
+#   · con ≤ 800 px de alto compacta filas y márgenes (−15 %) para que quepan más entradas.
+# La pantalla más pequeña de las activas manda (así cabe en todas). Sin wlr-randr, o si falla, lanza fuzzel sin tocar nada.
+#   INK_SCREEN=1366x768   fuerza el tamaño lógico (pruebas)
+#   INK_FUZZEL_UNIT=133   px por cada 100 unidades de line-height / padding de fuzzel.ini. 133 = puntos a 96 dpi, que es lo
+#                         que se ve en la práctica; si tus menús salen más cortos de lo necesario, prueba con 100 (píxeles).
+unit=${INK_FUZZEL_UNIT:-133}
+
+# --- tamaño lógico (escala y rotación aplicadas) de la pantalla activa más pequeña: «ANCHOxALTO» ---
+screen=${INK_SCREEN:-}
+if [ -z "$screen" ] && command -v wlr-randr >/dev/null 2>&1; then
+    screen=$(wlr-randr 2>/dev/null | awk '
+        function flush() {
+            if (w && en == "yes") {
+                if (tr ~ /90|270/) { t = w; w = h; h = t }
+                lw = w / sc; lh = h / sc
+                if (!W || lw < W) W = lw
+                if (!H || lh < H) H = lh
+            }
+            w = 0
+        }
+        /^[^ ]/            { flush(); en = "yes"; sc = 1; tr = "normal"; next }
+        /^  Enabled:/      { en = $2 }
+        /^  Scale:/        { sc = $2 }
+        /^  Transform:/    { tr = $2 }
+        /current/ && /px,/ { split($1, d, "x"); w = d[1]; h = d[2] }
+        END { flush(); if (W && H) printf "%dx%d\n", W, H }')
+fi
+sw=${screen%%x*}; sh_=${screen##*x}
+case $sw$sh_ in ''|*[!0-9]*) exec fuzzel "$@" ;; esac
+
+# --- argumentos: se separan --lines/--width (se recalculan al final) y se localiza la config ---
+cfg=${XDG_CONFIG_HOME:-$HOME/.config}/fuzzel/fuzzel.ini
+lines=""; width=""
+n=$#
+while [ "$n" -gt 0 ]; do
+    a=$1; shift; n=$((n - 1))
+    case $a in
+        --lines|-l)  lines=$1; shift; n=$((n - 1)); continue ;;
+        --lines=*)   lines=${a#*=}; continue ;;
+        --width|-w)  width=$1; shift; n=$((n - 1)); continue ;;
+        --width=*)   width=${a#*=}; continue ;;
+        --config|-C) cfg=$1 ;;
+        --config=*)  cfg=${a#*=} ;;
+    esac
+    set -- "$@" "$a"
+done
+
+ini() {   # ini CLAVE POR-DEFECTO → valor numérico de fuzzel.ini (sin unidades)
+    v=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$cfg" 2>/dev/null | head -n1)
+    echo "${v:-$2}"
+}
+fs=$(sed -n 's/^[[:space:]]*font[[:space:]]*=.*size=\([0-9][0-9]*\).*/\1/p' "$cfg" 2>/dev/null | head -n1); fs=${fs:-12}
+lh=$(ini line-height $((fs * 2))); vp=$(ini vertical-pad 8); hp=$(ini horizontal-pad 40); ip=$(ini inner-pad 0)
+[ -n "$lines" ] || lines=$(ini lines 15)
+[ -n "$width" ] || width=$(ini width 30)
+case $lines in ''|*[!0-9]*) lines=15 ;; esac
+case $width in ''|*[!0-9]*) width=30 ;; esac
+
+# pantallas pequeñas: filas y márgenes un 15 % más compactos (solo si este fuzzel conoce esas opciones: si no, daría error)
+if [ "$sh_" -le 800 ] && fuzzel --help 2>&1 | grep -q -- '--line-height'; then
+    lh=$((lh * 85 / 100)); vp=$((vp * 85 / 100)); hp=$((hp * 85 / 100)); ip=$((ip * 85 / 100))
+    set -- "$@" --line-height "$lh" --vertical-pad "$vp" --horizontal-pad "$hp" --inner-pad "$ip"
+fi
+
+px() { echo $(( $1 * unit / 100 )); }
+row=$(px "$lh"); [ "$row" -ge 1 ] || row=1
+vpx=$(px "$vp"); hpx=$(px "$hp"); ipx=$(px "$ip")
+
+# alto: el menú va centrado y no debe tapar la barra de arriba (38 + 8 de margen + 8 de aire) ni salirse por abajo
+maxl=$(( (sh_ - 2 * 54 - 2 * vpx - ipx - 2) / row - 1 ))
+[ "$maxl" -ge 3 ] || maxl=3
+[ "$lines" -le "$maxl" ] || lines=$maxl
+
+# ancho (en caracteres): fuente monoespaciada, 0,6 em por carácter; 16 px de aire a cada lado
+cw10=$(( fs * unit * 6 / 100 )); [ "$cw10" -ge 1 ] || cw10=1
+maxw=$(( (sw - 32 - 2 * hpx - 2) * 10 / cw10 ))
+[ "$maxw" -ge 20 ] || maxw=20
+[ "$width" -le "$maxw" ] || width=$maxw
+
+exec fuzzel "$@" --lines "$lines" --width "$width"

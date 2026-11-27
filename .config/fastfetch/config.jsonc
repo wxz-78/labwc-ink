@@ -1,0 +1,21 @@
+{
+    "logo": { "type": "small", "color": { "1": "38;2;253;253;253" }, "padding": { "right": 3 } },
+    "display": { "separator": "  ", "color": { "keys": "38;2;253;253;253", "title": "white" }, "key": { "width": 8 } },
+    "modules": [
+        "title", "separator",
+        { "type": "os", "key": "os" },
+        { "type": "kernel", "key": "kernel" },
+        { "type": "wm", "key": "wm" },
+        { "type": "shell", "key": "shell" },
+        { "type": "terminal", "key": "term" },
+        { "type": "packages", "key": "pkgs" },
+        { "type": "cpu", "key": "cpu" },
+        { "type": "gpu", "key": "gpu" },
+        { "type": "memory", "key": "ram" },
+        { "type": "disk", "key": "disk" },
+        { "type": "battery", "key": "bat" },
+        { "type": "uptime", "key": "up" },
+        "break",
+        { "type": "colors", "symbol": "circle", "paddingLeft": 11 }
+    ]
+}

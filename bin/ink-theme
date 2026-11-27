@@ -1,0 +1,225 @@
+#!/bin/sh
+# ink-theme — color de acento de TODO el escritorio y tema de labwc. Por defecto: blanco y negro (tinta).
+# Uso: ink-theme menu | list | status | NOMBRE | #RRGGBB | wall | restore | look [Ink|Violeta|status]
+#   wall: saca el acento del fondo de pantalla actual (ImageMagick)
+#   look: elige el tema de labwc (Ink o Violeta); sin argumento alterna entre ambos. Al pasar de la tinta blanca a
+#         Violeta tiñe el acento de violeta suave (y lo devuelve al volver a Ink); un acento elegido a mano se respeta
+# Cada config lleva el acento como hex literal; aquí se sustituye el anterior por el nuevo (un solo sed) y se recarga
+# lo que se pueda (waybar, mako, labwc). foot, fish y las apps GTK lo toman al abrirse de nuevo.
+cfg=${XDG_CONFIG_HOME:-$HOME/.config}
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+state=${XDG_STATE_HOME:-$HOME/.local/state}/ink
+mkdir -p "$state"
+DEFAULT=fdfdfd   # el acento con el que se entregan los archivos del repositorio (tinta)
+# Violeta y lavanda son apagados (violeta suave y lila grisáceo) para que no cansen la vista.
+# Se admiten alias sin tilde (indigo, ambar) por compatibilidad con versiones anteriores.
+PALETTE="tinta:fdfdfd cinabrio:e2574c jade:4fb286 índigo:7f8cff ámbar:e5a64b glicina:b48ead violeta:a596c8 lavanda:c3b6dd"
+
+rd()      { v=""; [ -r "$1" ] && read -r v < "$1"; }
+say()     { notify-send -u low -t 2500 -h string:x-canonical-private-synchronous:ink-theme "󰏘  $1" "$2"; }
+norm()    { case $1 in indigo) echo índigo ;; ambar) echo ámbar ;; *) echo "$1" ;; esac; }
+palette() { n=$(norm "$1"); for e in $PALETTE; do [ "${e%%:*}" = "$n" ] && { echo "${e#*:}"; return 0; }; done; return 1; }
+rgb()     { r=${1%????}; g=${1#??}; g=${g%??}; echo "$((0x$r));$((0x$g));$((0x${1#????}))"; }   # rrggbb → r;g;b (fastfetch)
+# El acento anterior se lee de un archivo de estado: validarlo evita que un valor corrupto
+# (/ o & entre otros) rompa el sed y deje los 13 archivos con colores distintos.
+valid_hex() { case $1 in [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) return 0 ;; *) return 1 ;; esac; }
+
+# bump HEX → mismo color con el último dígito cambiado en 1 (imperceptible): sirve para esquivar colisiones
+bump() { printf '%s%x' "${1%?}" $(( (0x${1#?????} + 1) % 16 )); }
+
+# Un solo ink-theme a la vez: dos ejecuciones simultáneas (atajo pulsado dos veces) se pisarían el sed.
+lock() {
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 9>"$state/theme.lock"
+    flock 9
+}
+
+reload() {
+    [ "${INK_NO_RELOAD:-0}" = 1 ] && return 0
+    pgrep -x waybar >/dev/null && pkill -SIGUSR2 waybar
+    pgrep -x mako >/dev/null && command -v makoctl >/dev/null 2>&1 && makoctl reload >/dev/null 2>&1
+    pgrep -x labwc >/dev/null && labwc --reconfigure >/dev/null 2>&1
+    return 0
+}
+
+apply() {   # apply HEX NOMBRE [HEX-ANTERIOR]  → deja en $applied el hex que de verdad se aplicó
+    lock
+    new=$1 name=$2
+    if [ -n "$3" ]; then old=$3; else rd "$state/accent-hex"; old=${v:-$DEFAULT}; fi
+    if ! valid_hex "$new" || ! valid_hex "$old"; then
+        echo "ink-theme: acento no válido («$old» → «$new»); revisa $state/accent-hex" >&2
+        return 1
+    fi
+    if [ "$new" != "$old" ]; then
+        set --
+        for f in "$cfg"/waybar/style.css "$cfg"/foot/foot.ini "$cfg"/fuzzel/fuzzel.ini "$cfg"/fuzzel/wallpaper.ini \
+                 "$cfg"/mako/config "$cfg"/swaylock/config "$cfg"/btop/themes/ink.theme "$cfg"/zathura/zathurarc \
+                 "$cfg"/gtk-3.0/gtk.css "$cfg"/gtk-4.0/gtk.css "$cfg"/fish/config.fish "$cfg"/fastfetch/config.jsonc; do
+            [ -f "$f" ] && set -- "$@" "$f"
+        done
+        # Todos los temas de labwc instalados (Ink, Violeta y cualquier otro): si no, el tema elegido se quedaría
+        # con el acento viejo mientras el resto del escritorio cambia.
+        for f in "$data"/themes/*/labwc/themerc; do
+            [ -f "$f" ] && set -- "$@" "$f"
+        done
+        # Si el color nuevo ya existe en los archivos (texto, fondo…), al sustituir el acento se mezclaría con él
+        # y luego no habría forma de separarlos (p. ej. #ffffff convertiría todo el texto blanco en acento).
+        # Se desplaza un paso hasta que sea único.
+        n=0
+        while [ "$n" -lt 16 ] && [ $# -gt 0 ] && grep -qiF -e "$new" -e "$(rgb "$new")" "$@" 2>/dev/null; do
+            new=$(bump "$new"); n=$((n + 1))
+        done
+        [ $# -gt 0 ] && sed -i -e "s/$old/$new/Ig" -e "s/$(rgb "$old")/$(rgb "$new")/g" "$@"
+    fi
+    applied=$new
+    printf '%s\n' "$applied" > "$state/accent-hex"
+    printf '%s\n' "$name" > "$state/accent"
+    # Un acento elegido a mano (o del fondo) deja de ser «el que puso el tema»: `look Ink` ya no lo toca
+    [ "${LOOK_AUTO:-0}" = 1 ] || rm -f "$state/look-accent"
+    reload
+}
+
+set_name() {
+    hex=$(palette "$1") || { echo "ink-theme: no conozco «$1» (ink-theme list)" >&2; exit 1; }
+    name=$(norm "$1")
+    apply "$hex" "$name" || exit 1
+    say "Acento: $name" "#$hex"
+}
+
+set_hex() {
+    h=$(printf '%s' "${1#\#}" | tr 'A-F' 'a-f')
+    printf '%s' "$h" | grep -Eq '^[0-9a-f]{6}$' || { echo "ink-theme: «$1» no es un color #RRGGBB" >&2; exit 1; }
+    apply "$h" personalizado || exit 1
+    say "Acento personalizado" "#$applied"
+}
+
+# Acento a partir del fondo: de los colores dominantes se elige el más vivo y se fija su luminosidad
+# (así siempre se lee sobre fondo oscuro y con texto negro encima).
+wall() {
+    rd "$state/wallpaper"; img=$v
+    [ -f "$img" ] || { say "Sin fondo" "Elige uno primero (Super+W)"; exit 1; }
+    im=magick; command -v magick >/dev/null 2>&1 || im=convert
+    command -v "$im" >/dev/null 2>&1 || { say "Falta ImageMagick" "sudo pacman -S imagemagick"; exit 1; }
+    hex=$($im "$img[0]" -resize 120x120 -colors 16 -unique-colors txt:- 2>/dev/null | awk '
+        function abs(x) { return x < 0 ? -x : x }
+        function d2h(n,   t) { t = "0123456789abcdef"; n = int(n * 255 + 0.5); return substr(t, int(n / 16) + 1, 1) substr(t, n % 16 + 1, 1) }
+        match($0, /#[0-9A-Fa-f]+/) {
+            # ImageMagick da 6, 8, 12 o 16 dígitos según su profundidad: de cada canal se usan sus 2 primeros
+            hx = tolower(substr($0, RSTART + 1, RLENGTH - 1)); n = length(hx); w = (n % 3 == 0) ? n / 3 : n / 4
+            for (i = 0; i < 3; i++) ch[i] = ((index("0123456789abcdef", substr(hx, i * w + 1, 1)) - 1) * 16 + index("0123456789abcdef", substr(hx, i * w + 2, 1)) - 1) / 255
+            r = ch[0]; g = ch[1]; b = ch[2]
+            mx = r; if (g > mx) mx = g; if (b > mx) mx = b
+            mn = r; if (g < mn) mn = g; if (b < mn) mn = b
+            l = (mx + mn) / 2; d = mx - mn; s = 0; h = 0
+            if (d > 0) {
+                s = d / (1 - abs(2 * l - 1))
+                h = (mx == r) ? (g - b) / d : (mx == g) ? (b - r) / d + 2 : (r - g) / d + 4
+                if (h < 0) h += 6
+            }
+            if ((score = s * (1 - abs(l - 0.55))) > best) { best = score; bh = h; bs = s }
+        }
+        END {
+            if (best < 0.12) exit 1
+            s = bs < 0.55 ? 0.55 : bs > 0.8 ? 0.8 : bs
+            l = 0.62; c = (1 - abs(2 * l - 1)) * s; x = c * (1 - abs(bh - 2 * int(bh / 2) - 1)); m = l - c / 2
+            k = int(bh); r = g = b = 0
+            if (k == 0) { r = c; g = x } else if (k == 1) { r = x; g = c } else if (k == 2) { g = c; b = x }
+            else if (k == 3) { g = x; b = c } else if (k == 4) { r = x; b = c } else { r = c; b = x }
+            print d2h(r + m) d2h(g + m) d2h(b + m)
+        }')
+    if [ -z "$hex" ]; then say "Fondo sin color" "Es casi gris: se queda el acento actual"; exit 0; fi
+    apply "$hex" "del fondo" || exit 1
+    say "Acento del fondo" "#$applied"
+}
+
+# Tema de labwc indicado en rc.xml (el primer <name> del bloque <theme>, no los de <font>)
+theme_name() {
+    rc="$cfg/labwc/rc.xml"
+    [ -f "$rc" ] || { echo Ink; return 0; }
+    sed -n '/<theme>/,/<\/theme>/ { s/.*<name>\([^<]*\)<\/name>.*/\1/p; }' "$rc" | head -n1
+}
+
+# Escoge el tema de labwc sin tocar el acento: `look` alterna, `look Violeta` lo fija, `look status` solo lee
+look() {
+    rc="$cfg/labwc/rc.xml"
+    [ -f "$rc" ] || { echo "ink-theme: falta $rc" >&2; return 1; }
+    cur=$(theme_name); cur=${cur:-Ink}
+    case "$1" in
+        status)       echo "$cur"; return 0 ;;
+        "")           if [ "$cur" = Violeta ]; then want=Ink; else want=Violeta; fi ;;
+        Ink|Violeta)  want=$1 ;;
+        *)            echo "ink-theme: tema desconocido «$1» (Ink o Violeta)" >&2; return 1 ;;
+    esac
+    if [ "$want" = "$cur" ]; then say "Tema de labwc: $cur" "Ya estaba activo"; return 0; fi
+    if [ ! -f "$data/themes/$want/labwc/themerc" ]; then
+        echo "ink-theme: falta $data/themes/$want/labwc/themerc (vuelve a ejecutar ./dotfiles.sh)" >&2
+        return 1
+    fi
+    tmp=$(mktemp "${rc}.XXXXXX") || return 1
+    awk -v t="$want" '
+        /<theme>/                       { sect = 1 }
+        sect && !done && /<name>/       { sub(/<name>[^<]*<\/name>/, "<name>" t "</name>"); done = 1 }
+        { print }
+        /<\/theme>/                     { sect = 0 }
+    ' "$rc" > "$tmp" || { rm -f "$tmp"; return 1; }
+    if grep -q "<name>$want</name>" "$tmp"; then
+        cat "$tmp" > "$rc"   # sobrescribe sin cambiar permisos ni propietario
+        ok=1
+    fi
+    rm -f "$tmp"
+    [ "${ok:-0}" = 1 ] || { echo "ink-theme: no pude cambiar el tema en $rc" >&2; return 1; }
+    # Con el acento blanco de fábrica, Violeta se vería igual de dominante que Ink (borde, filetes, barra…):
+    # se tiñe de violeta suave. Solo si el acento era la tinta; uno elegido a mano se respeta.
+    # Al volver a Ink se devuelve la tinta, pero únicamente si el violeta lo puso este mismo cambio de tema.
+    rd "$state/accent-hex"; cur_hex=${v:-$DEFAULT}; note=""
+    if [ "$want" = Violeta ] && [ "$cur_hex" = "$DEFAULT" ]; then
+        if ( INK_NO_RELOAD=1 LOOK_AUTO=1 apply "$(palette violeta)" violeta ); then
+            rd "$state/accent-hex"; printf '%s\n' "$v" > "$state/look-accent"   # el hex que de verdad se aplicó (pudo desplazarse)
+            note="Acento violeta suave"
+        fi
+    elif [ "$want" = Ink ]; then
+        rd "$state/look-accent"; auto=$v
+        if [ -n "$auto" ] && [ "$auto" = "$cur_hex" ]; then
+            if ( INK_NO_RELOAD=1 LOOK_AUTO=1 apply "$DEFAULT" tinta "$auto" ); then
+                rm -f "$state/look-accent"
+                note="Acento tinta"
+            fi
+        fi
+    fi
+    say "Tema de labwc: $want" "${note:-Se abre una ventana nueva para verlo del todo}"
+    reload
+}
+
+menu_entries() {
+    for e in $PALETTE; do printf '●  %s\n' "${e%%:*}"; done
+    printf '󰸉  Del fondo de pantalla\n'
+    printf '󰓃  Tema: %s\n' "$(theme_name)"
+}
+
+menu() {
+    pkill -x fuzzel && exit 0
+    entries=$(menu_entries)
+    n=$(printf '%s\n' "$entries" | wc -l)   # una línea por entrada: jamás se queda corto al añadir colores
+    sel=$(printf '%s\n' "$entries" | ink-fuzzel --dmenu --lines "$n" --width 30 --prompt "󰏘  ")
+    case $sel in
+        "")     ;;
+        *fondo*) wall ;;
+        *Tema*)  look ;;
+        *)      set_name "${sel#●  }" ;;
+    esac
+}
+
+case "$1" in
+    menu)    menu ;;
+    look)    look "$2" ;;
+    wall)    wall ;;
+    list)    for e in $PALETTE; do printf '%-9s #%s\n' "${e%%:*}" "${e#*:}"; done ;;
+    status)  rd "$state/accent"; n=${v:-tinta}; rd "$state/accent-hex"; echo "$n #${v:-$DEFAULT}" ;;
+    restore) # tras reinstalar los dotfiles los archivos vuelven al acento de fábrica: se reaplica el que elegiste
+             rd "$state/accent-hex"; h=$v; rd "$state/accent"
+             [ -n "$h" ] && [ "$h" != "$DEFAULT" ] && apply "$h" "${v:-personalizado}" "$DEFAULT"
+             exit 0 ;;
+    "")      echo "uso: ink-theme menu|list|status|NOMBRE|#RRGGBB|wall|restore|look [Ink|Violeta|status]" >&2; exit 1 ;;
+    \#*|[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) set_hex "$1" ;;
+    *)       set_name "$1" ;;
+esac

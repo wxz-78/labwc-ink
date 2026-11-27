@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# ink-hw — escaneo de hardware y arranque: gestor de arranque en uso, UEFI/BIOS, Secure Boot, ESP, microcódigo,
+# GPU (híbridas, NVIDIA por generación), Wi-Fi, Bluetooth, audio, discos y firmware que falta. Solo LEE.
+# Uso:  ink-hw          informe completo (con  sudo ink-hw  también lee /boot y la ESP si solo son de root)
+#       ink-hw --env    líneas CLAVE=VALOR para scripts (BOOTLOADER, UCODE_STATE, GPU_KINDS, LAPTOP…)
+# Si no se lanza desde una terminal, se abre solo en foot.
+on_terminal() {
+    [ -t 0 ] && [ -t 1 ] || return 1
+    [ "${TERM:-dumb}" != dumb ] || return 1
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        case $(readlink -f "/proc/$$/fd/1" 2>/dev/null) in
+            /dev/tty[0-9]*) return 1 ;;
+        esac
+    fi
+    return 0
+}
+case "${1:-}" in
+    -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --env|"") ;;
+    *) echo "uso: ink-hw [--env]" >&2; exit 1 ;;
+esac
+if [ "${1:-}" != --env ] && ! on_terminal && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    if command -v foot >/dev/null 2>&1; then
+        exec foot -T "Hardware" -e bash -c '"$0"; printf "\nEnter para cerrar… "; read -r _' "$0"
+    fi
+    command -v notify-send >/dev/null 2>&1 \
+        && notify-send -u normal "󰍛  Hardware" "No se pudo abrir una terminal: falta foot."
+    exit 1
+fi
+W=0
+ok()   { printf ' \e[32m✔\e[0m %s\n' "$*"; }
+bad()  { printf ' \e[33m!\e[0m %s\n' "$*"; W=$((W + 1)); }
+info() { printf ' \e[2m·\e[0m \e[2m%s\e[0m\n' "$*"; }
+hdr()  { printf '\n\e[1m%s\e[0m\n' "$*"; }
+for d in /usr/local/lib/ink "$(dirname "$(readlink -f "$0")")/../lib"; do
+    [ -r "$d/hwscan.sh" ] && { . "$d/hwscan.sh"; break; }
+done
+command -v hw_report_boot >/dev/null 2>&1 || { echo "Falta hwscan.sh (se instala con ./1-install.sh)." >&2; exit 1; }
+
+if [ "${1:-}" = --env ]; then hw_env; exit 0; fi
+hw_report_boot
+hw_report_hardware
+hw_report_gaming
+hw_report_security
+[ "$(id -u)" = 0 ] || info "Sin root no se puede leer /boot ni la ESP si son privados: para ver todo, ejecuta  sudo ink-hw"
+printf '\n'
+if [ "$W" -eq 0 ]; then printf '\e[32m✔ Nada que corregir.\e[0m\n'; else printf '\e[33m%d aviso(s).\e[0m\n' "$W"; fi

@@ -1,0 +1,27 @@
+#!/bin/sh
+# idle-suspend — suspende solo si el equipo va con batería (no corta descargas en AC) y nadie lo está usando por otras vías.
+# No suspende si: es un PC de escritorio (sin batería propia) · hay corriente conectada · suena audio (pactl) ·
+# hay una sesión SSH/remota activa · algún programa tiene un inhibidor de suspensión (systemd-inhibit).
+# Se ignoran las baterías de periféricos (ratón, teclado, mando: scope=Device) y cuenta como corriente cualquier fuente
+# conectada (Mains, USB, USB-C PD…). Si se aplaza, swayidle no lo reintenta hasta la próxima inactividad: es lo esperado.
+rd() { v=""; [ -r "$1" ] && read -r v < "$1"; }   # rd ARCHIVO → deja el contenido en $v
+has_bat=0
+for d in /sys/class/power_supply/*; do
+    rd "$d/type" || continue
+    type=$v
+    rd "$d/scope"; [ "$v" = Device ] && continue
+    case $type in
+        Battery) has_bat=1 ;;
+        *)       rd "$d/online"; [ "$v" = 1 ] && exit 0 ;;
+    esac
+done
+[ "$has_bat" = 1 ] || exit 0
+
+# Audio sonando (música, llamada): un sink de PulseAudio/PipeWire en RUNNING tiene un stream activo
+if command -v pactl >/dev/null 2>&1 && pactl list sinks short 2>/dev/null | grep -q RUNNING; then exit 0; fi
+# Sesión remota (SSH): suspender cortaría a quien esté conectado. El display local (:0, :0.0) NO cuenta.
+if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; then exit 0; fi
+who 2>/dev/null | grep -vE '\(:[0-9.]+\)$' | grep -qE '\([0-9a-fA-F:.]+\)$' && exit 0
+# Inhibidor de suspensión en modo «block» pedido por un programa (copias, descargas…); los «delay» de logind no cuentan
+if command -v systemd-inhibit >/dev/null 2>&1 && systemd-inhibit --list --no-legend 2>/dev/null | grep -E 'sleep' | grep -q 'block$'; then exit 0; fi
+exec systemctl suspend

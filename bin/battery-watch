@@ -1,0 +1,48 @@
+#!/bin/sh
+# battery-watch — avisa cuando la batería se acaba y actúa antes de que se apague de golpe. Lo lanza labwc/autostart.
+#   15 % aviso · 7 % crítico · 3 % suspende solo (guarda el estado antes del apagón). Incluye el tiempo restante estimado.
+# Consulta cada 60 s; cuando queda poco (≤ 20 %) y descarga, cada 20 s para no pasarse el umbral.
+# Sin batería propia (PC de escritorio) termina al instante. Se ignoran las baterías de periféricos (scope=Device).
+rd() { v=""; [ -r "$1" ] && read -r v < "$1"; }   # rd ARCHIVO → contenido en $v
+bat=""
+for d in /sys/class/power_supply/*; do
+    rd "$d/type"; [ "$v" = Battery ] || continue
+    rd "$d/scope"; [ "$v" = Device ] && continue
+    bat=$d; break
+done
+[ -n "$bat" ] || exit 0
+
+# eta → deja en $eta el tiempo restante («1 h 05 min») si el kernel da energía y potencia (o carga y corriente); vacío si no
+eta() {
+    eta=""; now=""; pw=""
+    rd "$bat/energy_now"; now=$v; rd "$bat/power_now"; pw=$v
+    if [ -z "$now" ] || [ -z "$pw" ]; then rd "$bat/charge_now"; now=$v; rd "$bat/current_now"; pw=$v; fi
+    case $now$pw in *[!0-9]*|"") return ;; esac
+    [ "$pw" -gt 0 ] || return
+    m=$(( now * 60 / pw ))
+    if [ "$m" -ge 60 ]; then eta=$(printf '%d h %02d min' $((m / 60)) $((m % 60))); else eta="$m min"; fi
+}
+
+last=100; suspended=0; wait=60
+while :; do
+    rd "$bat/status"; st=$v
+    rd "$bat/capacity"; cap=${v:-100}
+    if [ "$st" = Discharging ]; then
+        eta
+        left=""; [ -n "$eta" ] && left=" Quedan unos $eta."
+        if   [ "$cap" -le 3 ] && [ "$suspended" = 0 ]; then
+            notify-send -u critical -h string:x-canonical-private-synchronous:battery "󰂃  Batería al $cap %" "Suspendiendo para no perder el trabajo."
+            sleep 3
+            # Si en esos 3 s se enchufó el cargador, no se suspende: se relee el estado antes de actuar.
+            rd "$bat/status"; st=$v; rd "$bat/capacity"; cap=${v:-100}
+            if [ "$st" = Discharging ] && [ "$cap" -le 3 ]; then suspended=1; systemctl suspend; fi
+        elif [ "$cap" -le 7 ]  && [ "$last" -gt 7 ];  then notify-send -u critical -h string:x-canonical-private-synchronous:battery "󰂃  Batería crítica: $cap %" "Conecta el cargador ya.$left"
+        elif [ "$cap" -le 15 ] && [ "$last" -gt 15 ]; then notify-send -u normal   -h string:x-canonical-private-synchronous:battery "󰁺  Batería baja: $cap %" "Conecta el cargador.$left"
+        fi
+        last=$cap
+        wait=60; [ "$cap" -le 20 ] && wait=20
+    else
+        last=100; suspended=0; wait=60   # cargando o llena: se rearma para el próximo ciclo
+    fi
+    sleep "$wait"
+done

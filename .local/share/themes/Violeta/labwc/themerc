@@ -1,0 +1,70 @@
+# Violeta — tema de labwc. Tinta con violeta profundo y lavanda grisáceo: tonos apagados, nada chillón.
+# Se elige con `ink-theme look Violeta` (o desde el centro de control, Super+Espacio → Pantalla y color).
+# Al elegirlo desde la tinta (acento blanco) se tiñe también el acento de violeta: `ink-theme look Ink` lo devuelve.
+#
+# Regla de diseño: el acento (el hex fdfdfd de abajo, que `ink-theme` sustituye solo) va SOLO en líneas finas
+# —borde de la ventana enfocada, iconos al pasar el cursor, filetes de menú y OSD—. Todo lo que rellena una
+# superficie (fila activa del menú, zonas de encaje, selector de ventanas, botones) usa los violetas fijos de
+# este archivo, así la tinta blanca nunca domina el conjunto.
+# Los violetas fijos son distintos de los de la paleta de ink-theme (`ink-theme list`): así no se mezclan al cambiar el acento.
+# Redondeo: <cornerRadius> en rc.xml.
+
+border.width: 1
+window.titlebar.padding.width: 16
+window.titlebar.padding.height: 6
+window.label.text.justify: Center
+
+# Ventanas: la enfocada sube un peldaño de luz; la inactiva se hunde en la tinta violeta
+window.active.border.color: #fdfdfd
+window.inactive.border.color: #2a2538
+window.active.title.bg.color: #1d1929
+window.inactive.title.bg.color: #110f18
+window.active.label.text.color: #ece7f5
+window.inactive.label.text.color: #6f6783
+
+window.button.width: 22
+window.button.height: 22
+window.button.spacing: 8
+window.button.hover.bg.color: #8b7db833
+window.button.hover.bg.corner-radius: 11
+
+window.active.button.unpressed.image.color: #a79bc2
+window.active.button.hover.image.color: #fdfdfd
+window.inactive.button.unpressed.image.color: #4d4660
+
+window.active.shadow.size: 44
+window.inactive.shadow.size: 24
+window.active.shadow.color: #07050fb3
+window.inactive.shadow.color: #07050f66
+
+# Menús: fondo violeta oscuro; la fila activa es un violeta hundido con texto claro (antes: bloque blanco macizo)
+menu.border.width: 1
+menu.border.color: #fdfdfd33
+menu.width.min: 200
+menu.items.padding.x: 16
+menu.items.padding.y: 8
+menu.items.bg.color: #161220f5
+menu.items.text.color: #e8e3f0
+menu.items.active.bg.color: #382f50
+menu.items.active.text.color: #f6f2fb
+menu.separator.color: #2d2740
+menu.separator.padding.width: 12
+menu.separator.padding.height: 6
+menu.title.bg.color: #161220f5
+menu.title.text.color: #f2eef8
+
+# OSD y selector de ventanas (Alt+Tab): el elemento activo se marca con violeta translúcido y un filete de acento
+osd.bg.color: #161220ee
+osd.border.color: #fdfdfd33
+osd.border.width: 1
+osd.label.text.color: #ece7f5
+osd.window-switcher.style-classic.item.active.bg.color: #8b7db83a
+osd.window-switcher.style-classic.item.active.border.color: #fdfdfd
+osd.workspace-switcher.boxes.width: 20
+osd.workspace-switcher.boxes.height: 20
+
+# Zonas de encaje: velo violeta con borde violeta medio (antes: velo y borde blancos)
+snapping.overlay.edge.bg.color: #8b7db81c
+snapping.overlay.region.bg.color: #8b7db81a
+snapping.overlay.edge.border.color: #8b7db8
+snapping.overlay.region.border.color: #8b7db8
